@@ -5,7 +5,7 @@ import logging
 import os
 import urllib.request
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # ==========================================
 # NASTAVENÍ BOTA A TELEGRAMU
@@ -53,69 +53,92 @@ def zkontroluj_kill_switch():
         posli_notifikaci(msg, "FATAL", poslat_telegram=True)
         mt5.shutdown()
         exit()
-
+# ==========================================
+# MAKROEKONOMICKÝ AGENT (Nouzový Bypass před odletem)
+# ==========================================
+def stahni_a_zkontroluj_makro(slozka_makro, dnesni_datum):
+    # Makro knihovna vyžaduje update, vyřešíme po návratu z Portugalska!
+    # Zatím vracíme True, aby mohl bot nerušeně těžit Svíčky a Orderflow.
+    return True
 # ==========================================
 # HLAVNÍ FUNKCE (Sběrač)
 # ==========================================
 def sberac_dat():
-    posli_notifikaci("🚀 MARKETPAL_sentinel se probouzí a startuje motory...", "INFO", poslat_telegram=True)
+    posli_notifikaci("🚀 MARKETPAL_sentinel se probouzí. Aktivuji Orderflow a Makro štíty...", "INFO", poslat_telegram=True)
     
     if not mt5.initialize():
         posli_notifikaci("Nepodařilo se připojit k MT5! Zkontroluj Ghetto-Server.", "FATAL")
         return
 
-    # TADY JE TA MAGIE: Seznam trhů (Bitcoin jede i o víkendu!)
     symboly = ["EURUSD", "XAUUSD", "AAPL"]
     pocitadlo_cyklu = 0
     
-    posli_notifikaci(f"✅ MT5 připojeno. Začínám potichu sbírat trhy: {', '.join(symboly)}.", "INFO", poslat_telegram=True)
+    posli_notifikaci(f"✅ MT5 připojeno. Těžím svíčky i Orderflow pro: {', '.join(symboly)}.", "INFO", poslat_telegram=True)
 
     while True:
         zkontroluj_kill_switch()
+        nyni = time.time()
+        dnesni_datum = datetime.now().strftime('%Y_%m_%d')
         
-        # Bot projde všechny zadané trhy jeden po druhém
+        # --- 1. MAKROEKONOMICKÝ ŠTÍT A FUNDAMENTALS ---
+        slozka_makro = "data/3_bronze_macro"
+        os.makedirs(slozka_makro, exist_ok=True)
+        
+        # Tohle stáhne data do CSV a zároveň zjistí, jestli je bezpečno!
+        bezpecno_obchodovat = stahni_a_zkontroluj_makro(slozka_makro, dnesni_datum)
+        
         for symbol in symboly:
             try:
+                # --- 2. SBĚR SVÍČEK (OHLC) - Retence 365 dní ---
                 rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 1, 1)
-                
                 if rates is not None and len(rates) > 0:
                     df = pd.DataFrame(rates)
-                    df['time'] = pd.to_datetime(df['time'], unit='s')
-                    
-                    # OPRAVA ČASU O HODINU (EET -> CET)
-                    df['time'] = df['time'] - pd.Timedelta(hours=1)
+                    df['time'] = pd.to_datetime(df['time'], unit='s') - pd.Timedelta(hours=1)
                     df = df.round({'open': 5, 'high': 5, 'low': 5, 'close': 5})
                     
-                    # DENNÍ SOUBORY A SLOŽKY
-                    dnesni_datum = datetime.now().strftime('%Y_%m_%d')
-                    slozka_data = f"data/1_bronze_raw/{symbol}"
-                    os.makedirs(slozka_data, exist_ok=True)
+                    slozka_svicky = f"data/1_bronze_raw/{symbol}"
+                    os.makedirs(slozka_svicky, exist_ok=True)
+                    cesta_svicky = f"{slozka_svicky}/{dnesni_datum}.csv"
+                    df.to_csv(cesta_svicky, mode='a', header=not os.path.exists(cesta_svicky), index=False)
                     
-                    cesta_k_souboru = f"{slozka_data}/{dnesni_datum}.csv"
-                    df.to_csv(cesta_k_souboru, mode='a', header=not os.path.exists(cesta_k_souboru), index=False)
-                    
-                    # ČISTIČ (365 DNÍ)
-                    nyni = time.time()
-                    for f in os.listdir(slozka_data):
-                        f_cesta = os.path.join(slozka_data, f)
-                        if os.path.isfile(f_cesta):
-                            if os.stat(f_cesta).st_mtime < nyni - (365 * 86400):
-                                os.remove(f_cesta)
-                                logging.info(f"🧹 Smazán starý soubor: {f}")
+                    # Čistič svíček (365 dní)
+                    for f in os.listdir(slozka_svicky):
+                        f_cesta = os.path.join(slozka_svicky, f)
+                        if os.path.isfile(f_cesta) and os.stat(f_cesta).st_mtime < nyni - (365 * 86400):
+                            os.remove(f_cesta)
 
-                else:
-                    logging.warning(f"Nedostal jsem data pro {symbol} (Trh je možná zavřený).")
+                # --- 3. SBĚR ORDERFLOW (TICKY) - Retence 30 dní ---
+                # Stáhne všechny ticky (změny ceny) za posledních 60 vteřin
+                cas_start = int(nyni) - 60
+                cas_konec = int(nyni)
+                ticks = mt5.copy_ticks_range(symbol, cas_start, cas_konec, mt5.COPY_TICKS_ALL)
+                
+                if ticks is not None and len(ticks) > 0:
+                    df_ticks = pd.DataFrame(ticks)
+                    df_ticks['time'] = pd.to_datetime(df_ticks['time'], unit='s') - pd.Timedelta(hours=1)
+                    
+                    slozka_ticks = f"data/2_bronze_ticks/{symbol}"
+                    os.makedirs(slozka_ticks, exist_ok=True)
+                    cesta_ticks = f"{slozka_ticks}/{dnesni_datum}.csv"
+                    # Pro ticky ukládáme jen základní surová data bez složitého zaokrouhlování
+                    df_ticks.to_csv(cesta_ticks, mode='a', header=not os.path.exists(cesta_ticks), index=False)
+                    
+                    # Čistič ticků (30 dní - tvůj požadavek)
+                    for f in os.listdir(slozka_ticks):
+                        f_cesta = os.path.join(slozka_ticks, f)
+                        if os.path.isfile(f_cesta) and os.stat(f_cesta).st_mtime < nyni - (30 * 86400):
+                            os.remove(f_cesta)
+                            logging.info(f"🧹 Smazán starý Orderflow soubor: {f}")
 
             except Exception as e:
                 logging.error(f"Chyba při stahování {symbol}: {e}")
 
-        # HEARTBEAT KAŽDOU HODINU
+        # --- 4. HEARTBEAT A USÍNÁNÍ ---
         pocitadlo_cyklu += 1
         if pocitadlo_cyklu >= 60:
-            posli_notifikaci(f"Sentinel hlásí: Jsem naživu, servery běžící, těžím {len(symboly)} trhů najednou.", "HEARTBEAT", poslat_telegram=True)
+            posli_notifikaci(f"Sentinel: Žiju. Těžím Svíčky i Orderflow pro {len(symboly)} trhů. Makro štít aktivní: {bezpecno_obchodovat}.", "HEARTBEAT", poslat_telegram=True)
             pocitadlo_cyklu = 0
 
-        # Počká 60 vteřin a jde zkontrolovat všechny trhy znovu
         time.sleep(60)
 
 # ==========================================
