@@ -21,3 +21,24 @@
 2026-02-18 15:35:45,927 - INFO - 🚀 MARKETPAL_sentinel se probouzí a startuje motory...
 2026-02-18 15:35:46,779 - INFO - ✅ MT5 připojeno. Začínám potichu sbírat EURUSD.
 2026-02-18 15:49:47,454 - ERROR - 💀 FATAL: 🚨 KILL SWITCH AKTIVOVÁN! Našel jsem STOP.txt. MARKETPAL_sentinel se bezpečně vypíná.
+2026-02-18 16:13:00,777 - INFO - 🚀 MARKETPAL_sentinel se probouzí a startuje motory...
+2026-02-18 16:13:01,659 - INFO - ✅ MT5 připojeno. Začínám potichu sbírat EURUSD.
+2026-02-18 16:32:45,279 - ERROR - 💀 FATAL: Chyba při stahování dat: name 'symbol' is not defined
+2026-02-18 16:34:41,468 - INFO - 🚀 MARKETPAL_sentinel se probouzí a startuje motory...
+2026-02-18 16:34:41,816 - INFO - ✅ MT5 připojeno. Začínám potichu sbírat EURUSD.
+2026-02-18 16:38:21,347 - INFO - 🚀 MARKETPAL_sentinel se probouzí a startuje motory...
+2026-02-18 16:38:21,669 - INFO - ✅ MT5 připojeno. Začínám potichu sbírat trhy: EURUSD, XAUUSD, BTCUSD.
+2026-02-18 16:38:23,469 - WARNING - Nedostal jsem data pro BTCUSD (Trh je možná zavřený).
+2026-02-18 16:39:23,499 - WARNING - Nedostal jsem data pro BTCUSD (Trh je možná zavřený).
+2026-02-18 16:40:23,545 - WARNING - Nedostal jsem data pro BTCUSD (Trh je možná zavřený).
+2026-02-18 16:41:23,635 - WARNING - Nedostal jsem data pro BTCUSD (Trh je možná zavřený).
+2026-02-18 16:42:23,711 - WARNING - Nedostal jsem data pro BTCUSD (Trh je možná zavřený).
+2026-02-18 16:43:23,766 - WARNING - Nedostal jsem data pro BTCUSD (Trh je možná zavřený).
+2026-02-18 16:44:23,823 - WARNING - Nedostal jsem data pro BTCUSD (Trh je možná zavřený).
+2026-02-18 16:45:23,876 - WARNING - Nedostal jsem data pro BTCUSD (Trh je možná zavřený).
+2026-02-18 16:46:23,924 - WARNING - Nedostal jsem data pro BTCUSD (Trh je možná zavřený).
+2026-02-18 16:47:23,986 - WARNING - Nedostal jsem data pro BTCUSD (Trh je možná zavřený).
+2026-02-18 16:48:24,073 - WARNING - Nedostal jsem data pro BTCUSD (Trh je možná zavřený).
+2026-02-18 16:49:24,105 - WARNING - Nedostal jsem data pro BTCUSD (Trh je možná zavřený).
+2026-02-18 16:50:24,140 - WARNING - Nedostal jsem data pro BTCUSD (Trh je možná zavřený).
+2026-02-18 16:51:24,195 - WARNING - Nedostal jsem data pro BTCUSD (Trh je možná zavřený).
