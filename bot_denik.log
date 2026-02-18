@@ -42,3 +42,5 @@
 2026-02-18 16:49:24,105 - WARNING - Nedostal jsem data pro BTCUSD (Trh je možná zavřený).
 2026-02-18 16:50:24,140 - WARNING - Nedostal jsem data pro BTCUSD (Trh je možná zavřený).
 2026-02-18 16:51:24,195 - WARNING - Nedostal jsem data pro BTCUSD (Trh je možná zavřený).
+2026-02-18 16:52:39,125 - INFO - 🚀 MARKETPAL_sentinel se probouzí a startuje motory...
+2026-02-18 16:52:39,556 - INFO - ✅ MT5 připojeno. Začínám potichu sbírat trhy: EURUSD, XAUUSD, AAPL.
