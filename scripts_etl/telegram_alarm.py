@@ -12,10 +12,7 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # 3. Kontrola (pro jistotu, abys nehledal chybu hodinu)
 if not TOKEN or not CHAT_ID:
-    raise ValueError("❌ CHYBA: V souboru .env chybí TOKEN nebo CHAT_ID!")
-
-# ... zbytek tvého kódu ...
-bot = Bot(token=TOKEN)        
+    raise ValueError("❌ CHYBA: V souboru .env chybí TOKEN nebo CHAT_ID!")      
 
 async def posli_zpravu():
     bot = Bot(token=TOKEN)
@@ -32,3 +29,6 @@ async def posli_zpravu():
 
 if __name__ == "__main__":
     asyncio.run(posli_zpravu())
+    
+    # ... zbytek tvého kódu ...
+bot = Bot(token=TOKEN)  

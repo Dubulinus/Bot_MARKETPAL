@@ -1,12 +1,24 @@
 import vectorbt as vbt
 import pandas as pd
 import asyncio
+import os
+from dotenv import load_dotenv
 from telegram import Bot
 from pathlib import Path
 
-# === KONFIGURACE ===
-TOKEN = '8752286962:AAEbe6ck1VeNqQxPiHnzNhRD8pbRmAY1dcE'
-CHAT_ID = '8544333240' # To číslo, co ti to vypsalo minule
+#KONFIGURACE
+
+# 1. Načte tajemství z .env
+load_dotenv()
+
+# 2. Vytáhne hodnoty (když tam nebudou, hodí None)
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+# 3. Kontrola (pro jistotu, abys nehledal chybu hodinu)
+if not TOKEN or not CHAT_ID:
+    raise ValueError("❌ CHYBA: V souboru .env chybí TOKEN nebo CHAT_ID!")
+
 CESTA_DATA = "data/03_CLEAN_PARQUET/EURUSD_Yahoo_1h.parquet"
 
 async def posli_report(text):
@@ -54,3 +66,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
+    # ... zbytek tvého kódu ...
+bot = Bot(token=TOKEN)  
