@@ -5,8 +5,8 @@ from telegram import Bot
 from pathlib import Path
 
 # === KONFIGURACE ===
-TOKEN = 'TVŮJ_TOKEN_TADY'
-CHAT_ID = 'TVOJE_ID_TADY' # To číslo, co ti to vypsalo minule
+TOKEN = '8752286962:AAEbe6ck1VeNqQxPiHnzNhRD8pbRmAY1dcE'
+CHAT_ID = '8544333240' # To číslo, co ti to vypsalo minule
 CESTA_DATA = "data/03_CLEAN_PARQUET/EURUSD_Yahoo_1h.parquet"
 
 async def posli_report(text):
