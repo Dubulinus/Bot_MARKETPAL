@@ -3,45 +3,51 @@ import pandas as pd
 from pathlib import Path
 
 # === NASTAVENÍ ===
-SYMBOL = "EURUSD=X"  # Yahoo kód pro EuroDollar
-# Yahoo dává 1h data až 730 dní dozadu. Pro začátek super.
-PERIODA = "2y"       # Stáhneme poslední 2 roky
-INTERVAL = "1h"      # Hodinové svíčky (stačí pro vývoj)
+SYMBOL = "EURUSD=X"
+PERIODA = "1y"
+INTERVAL = "1h"
 
-# Cesta pro uložení
+# Cesty
 CLEAN_DIR = Path("data/03_CLEAN_PARQUET")
 CLEAN_DIR.mkdir(parents=True, exist_ok=True)
 
 def tezba_yahoo():
-    print(f"⛏️  Těžím data z Yahoo Finance: {SYMBOL}...")
+    print(f"⛏️  Yahoo Express: Těžím {SYMBOL}...")
     
-    # Stažení dat (magie na jeden řádek)
-    df = yf.download(SYMBOL, period=PERIODA, interval=INTERVAL, progress=False)
-    
+    # Stažení dat
+    # multi_level_index=False říká Yahoo, ať nevymýšlí blbosti se sloupci
+    try:
+        df = yf.download(SYMBOL, period=PERIODA, interval=INTERVAL, progress=False, multi_level_index=False)
+    except TypeError:
+        # Kdyby náhodou tvá verze neuměla ten parametr nahoře, uděláme to ručně:
+        df = yf.download(SYMBOL, period=PERIODA, interval=INTERVAL, progress=False)
+        if isinstance(df.columns[0], tuple):
+            df.columns = [c[0] for c in df.columns]
+
     if df.empty:
-        print("❌ CHYBA: Yahoo nic nevrátilo. Jsi online?")
+        print("❌ CHYBA: Yahoo nic nedalo. Jsi online?")
         return
 
-    # Úprava dat pro VectorBT
-    # Yahoo vrací sloupce s velkými písmeny, VectorBT má rád malá
+    # === ČIŠTĚNÍ PRO VECTORBT ===
+    # 1. Pokud tam zůstaly nějaké divné sloupce (tuples), srovnáme je
+    if isinstance(df.columns[0], tuple):
+        df.columns = [c[0] for c in df.columns]
+    
+    # 2. Všechno na malá písmena (Open -> open)
     df.columns = [c.lower() for c in df.columns]
     
-    # Přejmenování indexu na 'time' (pro pořádek)
+    # 3. Časová osa
     df.index.name = 'time'
-    
-    # Yahoo občas vrací časovou zónu, VectorBT má radši čistý čas
-    df.index = df.index.tz_localize(None)
+    df.index = df.index.tz_localize(None) # Odstranění časových zón
 
-    print(f"✅ Staženo {len(df)} svíček.")
-    print("   (Prvních 5 řádků:)\n", df.head())
-
-    # Uložení do Parquetu
-    nazev_souboru = f"{SYMBOL.replace('=X', '')}_Yahoo_1h.parquet"
-    cesta = CLEAN_DIR / nazev_souboru
-    
+    # Uložení
+    nazev = f"EURUSD_Yahoo_1h.parquet"
+    cesta = CLEAN_DIR / nazev
     df.to_parquet(cesta)
-    print(f"\n💾 ULOŽENO: {cesta}")
-    print("🏁 Mise splněna. Jdi spát.")
+    
+    print(f"\n✅ ÚSPĚCH! Staženo {len(df)} svíček.")
+    print(f"💾 Uloženo v: {cesta}")
+    print("🎯 Dobrou noc, šéfe.")
 
 if __name__ == "__main__":
     tezba_yahoo()
