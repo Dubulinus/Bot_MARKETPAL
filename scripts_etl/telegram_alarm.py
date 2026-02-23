@@ -1,9 +1,21 @@
 import asyncio
+import os
+from dotenv import load_dotenv
 from telegram import Bot
 
-# === KONFIGURACE ===
-TOKEN = '8752286962:AAEbe6ck1VeNqQxPiHnzNhRD8pbRmAY1dcE'  # Sem dej ten dlouhý kód
-CHAT_ID = '8544333240'           # Sem dej to číslo, co jsi zjistil
+# 1. Načte tajemství z .env
+load_dotenv()
+
+# 2. Vytáhne hodnoty (když tam nebudou, hodí None)
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+# 3. Kontrola (pro jistotu, abys nehledal chybu hodinu)
+if not TOKEN or not CHAT_ID:
+    raise ValueError("❌ CHYBA: V souboru .env chybí TOKEN nebo CHAT_ID!")
+
+# ... zbytek tvého kódu ...
+bot = Bot(token=TOKEN)        
 
 async def posli_zpravu():
     bot = Bot(token=TOKEN)
