@@ -6,12 +6,23 @@ import os
 import urllib.request
 import urllib.parse
 from datetime import datetime, timedelta
+from dotenv import load_dotenv  # Musíš mít: pip install python-dotenv
+from telegram import Bot
+
+# 1. Načte tajemství z .env
+load_dotenv()
+
+# 2. Vytáhne hodnoty (když tam nebudou, hodí None)
+TOKEN = os.getenv("TELEGRAM_TOKEN01")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+# 3. Kontrola (pro jistotu, abys nehledal chybu hodinu)
+if not TOKEN or not CHAT_ID:
+    raise ValueError("❌ CHYBA: V souboru .env chybí TOKEN nebo CHAT_ID!")
 
 # ==========================================
 # NASTAVENÍ BOTA A TELEGRAMU
 # ==========================================
-TELEGRAM_TOKEN = "7750206963:AAF3495CpRGrmS3XQ2ECXzveFpMq4ICvlVI"
-TELEGRAM_CHAT_ID = "8544333240"
 
 # LOGOVÁNÍ
 logging.basicConfig(
@@ -36,9 +47,9 @@ def posli_notifikaci(zprava, uroven="INFO", poslat_telegram=False):
         logging.info(zprava)
         print(f"ℹ️ {zprava}")
 
-    if poslat_telegram and TELEGRAM_CHAT_ID:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        data = urllib.parse.urlencode({'chat_id': TELEGRAM_CHAT_ID, 'text': zprava}).encode('utf-8')
+    if poslat_telegram and CHAT_ID:
+        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+        data = urllib.parse.urlencode({'chat_id': CHAT_ID, 'text': zprava}).encode('utf-8')
         try:
             urllib.request.urlopen(url, data=data, timeout=10)
         except Exception as e:

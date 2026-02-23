@@ -10,3 +10,5 @@ data/
 # Ignorovat skryté složky Pythonu a záchranný kill switch
 __pycache__/
 STOP.txt
+
+.env
