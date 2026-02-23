@@ -2,7 +2,7 @@ import asyncio
 from telegram import Bot
 
 # === KONFIGURACE ===
-TOKEN = '8752286962:AAEbe6ck1VVeNqQxPiHnzNhRD8pbRmAY1dcE'  # Sem dej ten dlouhý kód
+TOKEN = '8752286962:AAEbe6ck1VeNqQxPiHnzNhRD8pbRmAY1dcE'  # Sem dej ten dlouhý kód
 CHAT_ID = '8544333240'           # Sem dej to číslo, co jsi zjistil
 
 async def posli_zpravu():
