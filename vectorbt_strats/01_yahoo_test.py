@@ -26,10 +26,18 @@ try:
     
     # 3. VÝSLEDEK
     print("\n=== 📊 VÝSLEDEK YAHOO TESTU ===")
-    print(f"Celkový výnos: {pf.total_return() * 100:.2f} %")
-    print(f"Počet obchodů: {pf.stats()['Total Trades']}")
-    print(f"Sharpe Ratio:  {pf.stats()['Sharpe Ratio']:.2f}")
     
+    # Řekneme mu: "Počítej s tím, že svíčky jsou hodinové (1h)"
+    stats = pf.stats(freq='1h')
+    
+    print(f"Celkový výnos: {stats['Total Return'] * 100:.2f} %")
+    print(f"Počet obchodů: {stats['Total Trades']}")
+    print(f"Sharpe Ratio:  {stats['Sharpe Ratio']:.2f}")
+    print(f"Win Rate:      {stats['Win Rate [%]']:.2f} %")
+    print(f"Max Drawdown:  {stats['Max Drawdown [%]']:.2f} %")
+
 except Exception as e:
-    print(f"❌ CHYBA: {e}")
-    print("Zkontroluj, jestli se soubor jmenuje přesně takhle!")
+    # Teď už nám to vypíše skutečnou chybu, ne moji vymyšlenou hlášku
+    print(f"❌ SKUTEČNÁ CHYBA: {e}")
+    import traceback
+    traceback.print_exc()
