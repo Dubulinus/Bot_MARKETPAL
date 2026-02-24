@@ -15,7 +15,7 @@ logging.basicConfig(
 )
 
 load_dotenv()
-TOKEN = os.getenv("TELEGRAM_TOKEN")
+TOKEN = os.getenv("TELEGRAM_TOKEN02")
 
 # === 2. PŘÍKAZY BOTA ===
 
@@ -32,19 +32,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=update.effective_chat.id, text=msg, parse_mode='Markdown')
 
 async def get_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Stáhne aktuální cenu z Yahoo"""
+    """Stáhne aktuální cenu z Yahoo - OPRAVENÁ VERZE"""
     await context.bot.send_message(chat_id=update.effective_chat.id, text="🔍 Sahám na trh...")
     
     try:
-        # Stáhneme poslední 1 den, minutová data
+        # Stáhneme poslední data
         df = yf.download("EURUSD=X", period="1d", interval="1m", progress=False)
-        current_price = df['Close'].iloc[-1]
+        
+        # === ZMĚNA ZDE ===
+        # Vezmeme poslední zavírací cenu
+        raw_price = df['Close'].iloc[-1]
+        
+        # Trik: Pokud je to Pandas Series (tabulka), vytáhneme z ní hodnotu pomocí .item()
+        # Pokud je to už číslo, float() to pojistí.
+        if hasattr(raw_price, 'item'):
+            current_price = raw_price.item()
+        else:
+            current_price = float(raw_price)
+            
+        # Zformátování času
         last_time = df.index[-1].strftime('%H:%M:%S')
         
         msg = f"💶 *EUR/USD UPDATE*\nCena: `{current_price:.5f}`\nČas: {last_time}"
         await context.bot.send_message(chat_id=update.effective_chat.id, text=msg, parse_mode='Markdown')
+        
     except Exception as e:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Chyba dat: {e}")
+        print(f"CHYBA PŘI PRICE: {e}") # Vypíše chybu i tobě do terminálu
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Chyba dat: {str(e)}")
 
 async def run_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Spustí ten tvůj backtest na požádání"""
