@@ -16,7 +16,7 @@ logging.basicConfig(
     level=logging.INFO
 )
 load_dotenv()
-TOKEN = os.getenv("TELEGRAM_TOKEN")
+TOKEN = os.getenv("TELEGRAM_TOKEN02")
 
 # ... (Funkce start a get_price nech stejné) ...
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
