@@ -1,14 +1,22 @@
-# Ignorovat celou datovou složku (Datové jezero zůstane jen na Ghetto-Serveru)
-data/
-
 # Ignorovat všechny logy (bot_denik.log atd.)
 *.log
 
-# Pro jistotu ignorovat jakékoliv CSV, kdyby se vytvořilo mimo složku
-*.csv
-
-# Ignorovat skryté složky Pythonu a záchranný kill switch
-__pycache__/
 STOP.txt
 
+# --- Tajemství ---
 .env
+.DS_Store
+
+# --- Data a Databáze ---
+data/
+obchodni_denik.json
+*.parquet
+*.csv
+*.html
+
+# --- Python bordel ---
+__pycache__/
+*.pyc
+venv/
+.idea/
+.vscode/
