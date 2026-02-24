@@ -1,0 +1,22 @@
+# Ignorovat všechny logy (bot_denik.log atd.)
+*.log
+
+STOP.txt
+
+# --- Tajemství ---
+.env
+.DS_Store
+
+# --- Data a Databáze ---
+data/
+obchodni_denik.json
+*.parquet
+*.csv
+*.html
+
+# --- Python bordel ---
+__pycache__/
+*.pyc
+venv/
+.idea/
+.vscode/
