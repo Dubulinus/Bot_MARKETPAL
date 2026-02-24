@@ -9,7 +9,7 @@ from telegram import Bot
 # === 1. NAČTENÍ TREZORU (Bezpečnost především) ===
 load_dotenv() # Hledá soubor .env
 
-TOKEN = os.getenv("TELEGRAM_TOKEN")
+TOKEN = os.getenv("TELEGRAM_TOKEN02")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # Nastavení dat
