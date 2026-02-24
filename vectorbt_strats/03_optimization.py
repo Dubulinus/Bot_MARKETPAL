@@ -46,17 +46,19 @@ print("="*40)
 # Bonus: Heatmapa (pokud bys ji chtěl vidět, ale v terminálu to nejde)
 # pf.total_return().vbt.heatmap().show()
 
-# ... (kód z minula končí printem vítězné kombinace) ...
+# ... (kód pokračuje po výpočtu best_return) ...
 
-print("🎨 Kreslím Heatmapu (otevře se v prohlížeči)...")
+print("🎨 Kreslím Heatmapu...")
 
-# Vytvoření grafu
-fig = pf.total_return().vbt.heatmap(
-    x_level='fast', 
-    y_level='slow',
+# 1. Vytáhneme výsledky a pojmenujeme osy
+vysledky = pf.total_return()
+vysledky.index.names = ['fast', 'slow']
+
+# 2. Vykreslení (BEZ PROBLÉMOVÝCH BAREV)
+# Smazal jsem 'cmap', teď to použije výchozí barvy (modrá/žlutá)
+fig = vysledky.vbt.heatmap(
     title='Optimalizace SMA: Kde jsou prachy? 💰',
-    symmetric=True, # Aby nula byla uprostřed barev
-    cmap='RdYlGn'   # Červená (prodělek) -> Žlutá -> Zelená (zisk)
+    symmetric=True
 )
 
 # Uložení a otevření
