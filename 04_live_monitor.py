@@ -1,130 +1,119 @@
-import yfinance as yf
-import pandas as pd
-import ta
 import os
 import time
-import asyncio
-from dotenv import load_dotenv
-from telegram import Bot
-from marketpal_logger import Denik 
+import pandas as pd
+import pandas_ta as ta
+import yfinance as yf
+import telebot
+from datetime import datetime
 
-# 1. NAČTENÍ HESEL
-load_dotenv()
-TOKEN = os.getenv("TELEGRAM_TOKEN02")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+# --- IMPORTUJEME BANKÉŘE ---
+# (Musí být ve stejné složce soubor portfolio_manager.py)
+from portfolio_manager import PortfolioManager
 
-# 2. NASTAVENÍ (Sledujeme toho víc!)
-SYMBOLS = ["EURUSD=X", "BTC-USD", "GC=F"] # Forex, Krypto, Zlato
-TIMEFRAME = "1h"
-FAST_MA = 26 
-SLOW_MA = 90
-RSI_PERIOD = 14
-RSI_OVERBOUGHT = 70 # Moc drahé (nepokupovat)
-RSI_OVERSOLD = 30   # Moc levné (neprodávat)
+# --- KONFIGURACE ---
+TELEGRAM_TOKEN = "TVUJ_TOKEN_ZDE"  # <-- DOPLŇ SVŮJ TOKEN (Sentinel nebo ten nový)
+CHAT_ID = "TVUJE_CHAT_ID"          # <-- DOPLŇ SVŮJ ID
+SYMBOLS = ["BTC-USD", "ETH-USD", "SOL-USD", "EURUSD=X", "GC=F"] # Přidal jsem Zlato a Euro
 
-async def posli_telegram(zprava):
-    if not TOKEN: return
+# --- INICIALIZACE ---
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
+
+# !!! DŮLEŽITÉ: Inicializujeme bankéře TADY NAHOŘE, aby byl globální !!!
+print("🏦 Startuji Portfolio Managera...")
+pm = PortfolioManager() 
+print(pm.get_status()) # Vypíše aktuální stav při startu
+
+def send_telegram_message(message):
     try:
-        bot = Bot(token=TOKEN)
-        await bot.send_message(chat_id=CHAT_ID, text=zprava)
+        bot.send_message(CHAT_ID, message)
     except Exception as e:
-        print(f"⚠️ Chyba Telegramu: {e}")
+        print(f"Chyba Telegramu: {e}")
 
-def analyzuj_symbol(symbol):
-    print(f"🔍 Skenuji: {symbol}...")
+def download_data(symbol):
     try:
-        # Stáhneme data
-        df = yf.download(symbol, period="7d", interval=TIMEFRAME, progress=False)
-        if df.empty: return
+        df = yf.download(symbol, period="5d", interval="15m", progress=False)
+        if df.empty:
+            print(f"⚠️ Žádná data pro {symbol}")
+            return None
+        return df
+    except Exception as e:
+        print(f"Chyba stahování {symbol}: {e}")
+        return None
 
-        # Oprava pro Yahoo
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+def process_symbol(symbol):
+    """
+    Hlavní mozek. Stáhne data, spočítá SMA, rozhodne o obchodu.
+    """
+    df = download_data(symbol)
+    if df is None: return
 
-        # --- INDIKÁTORY ---
-        # 1. SMA (Trend)
-        df['SMA_FAST'] = ta.trend.sma_indicator(df['Close'], window=FAST_MA)
-        df['SMA_SLOW'] = ta.trend.sma_indicator(df['Close'], window=SLOW_MA)
-        # 2. RSI (Síla) - NOVINKA
-        df['RSI'] = ta.momentum.rsi(df['Close'], window=RSI_PERIOD)
-
-        # Poslední svíčky
-        last = df.iloc[-1]
-        prev = df.iloc[-2]
-        
-        # Výpis pro kontrolu
-        print(f"   💰 Cena: {last['Close']:.2f} | RSI: {last['RSI']:.1f}")
-
-        # --- LOGIKA VSTUPU (SMA + RSI Filtr) ---
-        signal = None
-        duvod = ""
-
-        # BUY: Golden Cross AND RSI není přepálené (< 70)
-        if (prev['SMA_FAST'] < prev['SMA_SLOW'] and last['SMA_FAST'] > last['SMA_SLOW']):
-            if last['RSI'] < RSI_OVERBOUGHT:
-                signal = "BUY"
-                duvod = f"Golden Cross + RSI OK ({last['RSI']:.1f})"
-            else:
-                print(f"   ⚠️ Golden Cross zamítnut! RSI je moc vysoko ({last['RSI']:.1f})")
-
-        # SELL: Death Cross AND RSI není na dně (> 30)
-        elif (prev['SMA_FAST'] > prev['SMA_SLOW'] and last['SMA_FAST'] < last['SMA_SLOW']):
-            if last['RSI'] > RSI_OVERSOLD:
-                signal = "SELL"
-                duvod = f"Death Cross + RSI OK ({last['RSI']:.1f})"
-            else:
-                print(f"   ⚠️ Death Cross zamítnut! RSI je moc nízko ({last['RSI']:.1f})")
-
-        # --- AKCE ---
-        if signal:
-            print(f"   🚨 SIGNÁL: {signal}!")
-            # Zápis do deníku
-            denik = Denik()
-            denik.zapis_obchod(signal, symbol, last['Close'], duvod, "SMA_RSI_V2")
+    # Výpočet SMA (26 a 90)
+    try:
+        # yfinance vrací MultiIndex sloupce, musíme zploštit nebo přistoupit správně
+        # Pro jistotu bereme 'Close' a pokud je to DataFrame, vezmeme první sloupec
+        close_series = df['Close']
+        if isinstance(close_series, pd.DataFrame):
+            close_series = close_series.iloc[:, 0]
             
-            # Telegram
-            msg = (
-                f"🤖 **MARKETPAL BOT**\n"
-                f"-------------------\n"
-                f"Instrument: {symbol}\n"
-                f"Akce: **{signal}** 🚀\n"
-                f"Cena: {last['Close']:.4f}\n"
-                f"Důvod: {duvod}\n"
-                f"-------------------"
-            )
-            asyncio.run(posli_telegram(msg))
+        # Výpočet indikátorů
+        sma_fast = ta.sma(close_series, length=26)
+        sma_slow = ta.sma(close_series, length=90)
+        
+        # Získáme poslední dvě hodnoty (včera/teď) pro detekci křížení
+        # Musíme ošetřit, jestli máme dost dat
+        if len(sma_fast) < 90: return
+
+        last_fast = sma_fast.iloc[-1]
+        prev_fast = sma_fast.iloc[-2]
+        
+        last_slow = sma_slow.iloc[-1]
+        prev_slow = sma_slow.iloc[-2]
+        
+        current_price = close_series.iloc[-1]
+        
+        # --- LOGIKA KŘÍŽENÍ (CROSSOVER) ---
+
+        # 1. GOLDEN CROSS (Rychlá jde NAHORU přes Pomalou) -> BUY
+        if prev_fast < prev_slow and last_fast > last_slow:
+            msg = f"🚀 {symbol}: GOLDEN CROSS (BUY) @ {current_price:.2f}"
+            print(msg)
+            send_telegram_message(msg)
+            
+            # --> BANKÉŘ OTEVÍRÁ POZICI <--
+            # size=0.1 je napevno, časem to vypočítáme podle risku
+            pm.otevrit_pozici(symbol, current_price, "BUY", size=0.1)
+
+        # 2. DEATH CROSS (Rychlá jde DOLŮ přes Pomalou) -> SELL (Exit)
+        elif prev_fast > prev_slow and last_fast < last_slow:
+            msg = f"📉 {symbol}: DEATH CROSS (SELL) @ {current_price:.2f}"
+            print(msg)
+            send_telegram_message(msg)
+            
+            # --> BANKÉŘ ZAVÍRÁ POZICI <--
+            zisk = pm.zavrit_pozici(symbol, current_price)
+            
+            if zisk is not None:
+                balance_info = pm.get_status()
+                profit_msg = f"💰 OBCHOD UZAVŘEN!\nZisk: ${zisk:.2f}\n{balance_info}"
+                send_telegram_message(profit_msg)
+                print(profit_msg)
 
     except Exception as e:
-        print(f"❌ Chyba u {symbol}: {e}")
+        print(f"Chyba výpočtu u {symbol}: {e}")
 
 # --- HLAVNÍ SMYČKA ---
-if __name__ == "__main__":
-    print("🤖 BOT NASTARTOVÁN. (Ukonči pomocí Ctrl+C)")
-    print(f"Používám TOKEN02 (MarketPal).")
+def main():
+    print("✅ Bot spuštěn. Sleduji trhy...")
+    send_telegram_message(f"🤖 Bot online.\n{pm.get_status()}")
     
-    # --- NOVINKA: ODESLÁNÍ STARTUP ZPRÁVY ---
-    try:
-        # Tohle pošle zprávu hned po startu
-        uvitaci_zprava = "✅ **MarketPal ONLINE**\nSleduji: EURUSD, BTC, GOLD.\nJdu lovit příležitosti. 🦅"
-        asyncio.run(posli_telegram(uvitaci_zprava))
-        print("✅ Startup zpráva odeslána na Telegram.")
-    except Exception as e:
-        print(f"⚠️ Nepodařilo se poslat startup zprávu: {e}")
-    # ----------------------------------------
+    while True:
+        print(f"\n--- SKENOVÁNÍ: {datetime.now().strftime('%H:%M:%S')} ---")
+        for symbol in SYMBOLS:
+            process_symbol(symbol)
+            time.sleep(2) # Abychom nespamovali Yahoo a nedostali ban
+        
+        print("💤 Čekám 60 sekund...")
+        time.sleep(60)
 
-    print("-" * 30)
-
-    try:
-        while True:
-            # 1. Projedeme všechny symboly
-            for sym in SYMBOLS:
-                analyzuj_symbol(sym)
-            
-            print("💤 Jdu spát na 60 sekund...")
-            print("-" * 30)
-            
-            # 2. Počkáme (na testování dáme 60 sekund, v reálu 3600 = hodina)
-            time.sleep(60) 
-
-    except KeyboardInterrupt:
-        print("\n👋 Bot ukončen uživatelem. Jdu se učit Zeměpis.")
+if __name__ == "__main__":
+    main()

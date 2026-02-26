@@ -1,0 +1,15 @@
+{
+    "balance": 100100.0,
+    "equity": 100000,
+    "positions": {},
+    "history": [
+        {
+            "symbol": "BTC-USD",
+            "type": "BUY",
+            "entry": 65000,
+            "exit": 66000,
+            "profit": 100.0,
+            "close_time": "2026-02-26 07:28:56"
+        }
+    ]
+}
