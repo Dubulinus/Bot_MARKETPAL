@@ -28,7 +28,7 @@ portfolio = vbt.Portfolio.from_signals(
     entries, 
     exits, 
     init_cash=100000, 
-    fees=0.001
+    fees=0.001,
     freq='1h'
 )
 
