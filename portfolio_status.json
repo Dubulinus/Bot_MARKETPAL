@@ -1,5 +1,5 @@
 {
-    "balance": 100100.0,
+    "balance": 94100.0,
     "equity": 100000,
     "positions": {},
     "history": [
@@ -10,6 +10,16 @@
             "exit": 66000,
             "profit": 100.0,
             "close_time": "2026-02-26 07:28:56"
+        },
+        {
+            "symbol": "BTC-USD",
+            "type": "BUY",
+            "entry": 65000,
+            "exit": 5000,
+            "profit": -6000.0,
+            "close_time": "2026-02-28 23:36:31"
         }
-    ]
+    ],
+    "current_date": "2026-02-28",
+    "daily_start_balance": 100100.0
 }
