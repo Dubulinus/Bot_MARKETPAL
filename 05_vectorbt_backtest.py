@@ -29,6 +29,7 @@ portfolio = vbt.Portfolio.from_signals(
     exits, 
     init_cash=100000, 
     fees=0.001
+    freq='1h'
 )
 
 # Vypíšeme tvrdá data
@@ -42,4 +43,8 @@ print("="*40)
 
 print("📊 Vykresluji graf. Zkontroluj nové okno prohlížeče!")
 # Otevře interaktivní HTML graf v prohlížeči
-portfolio.plot().show()
+print("📊 Generuji HTML graf, moment...")
+fig = portfolio.plot()
+# Místo .show() to uložíme rovnou do souboru a prohlížeč si to z disku načte sám
+fig.write_html("backtest_vysledek.html", auto_open=True)
+print("✅ Graf uložen jako 'backtest_vysledek.html' a měl by se otevřít.")
