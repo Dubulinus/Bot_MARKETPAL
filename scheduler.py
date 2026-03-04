@@ -54,7 +54,7 @@ RUN_MINUTE = 0
 # Získej token: @BotFather na Telegramu → /newbot
 # Získej chat_id: pošli botu zprávu, pak:
 # https://api.telegram.org/bot<TOKEN>/getUpdates
-TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN02",   "")
+TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN01",   "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # Skripty ke spuštění v pořadí
