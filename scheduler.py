@@ -54,7 +54,7 @@ RUN_MINUTE = 0
 # Získej token: @BotFather na Telegramu → /newbot
 # Získej chat_id: pošli botu zprávu, pak:
 # https://api.telegram.org/bot<TOKEN>/getUpdates
-TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN01",   "")
+TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN",   "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # Skripty ke spuštění v pořadí
@@ -101,13 +101,18 @@ def run_script(script_name, description):
     start = datetime.now()
 
     try:
+        # FIX: nastav UTF-8 pro child proces — Windows cp1250 neumi emoji
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+
         result = subprocess.run(
             [sys.executable, script_name],
             capture_output=True,
             text=True,
-            encoding='utf-8',   # FIX: Windows cp1250 neumi emoji
-            errors='replace',   # FIX: misto crashe nahrad neznamy znak ?
-            timeout=300         # 5 minut max na skript
+            encoding='utf-8',
+            errors='replace',
+            timeout=300,
+            env=env
         )
         duration = (datetime.now() - start).total_seconds()
         success  = result.returncode == 0
