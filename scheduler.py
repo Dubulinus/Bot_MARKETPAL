@@ -105,7 +105,9 @@ def run_script(script_name, description):
             [sys.executable, script_name],
             capture_output=True,
             text=True,
-            timeout=300  # 5 minut max na skript
+            encoding='utf-8',   # FIX: Windows cp1250 neumi emoji
+            errors='replace',   # FIX: misto crashe nahrad neznamy znak ?
+            timeout=300         # 5 minut max na skript
         )
         duration = (datetime.now() - start).total_seconds()
         success  = result.returncode == 0
@@ -196,7 +198,7 @@ def run_full_pipeline():
     # Uchovej posledních 90 záznamů (3 měsíce)
     log_history = log_history[-90:]
 
-    with open(LOG_FILE, "w") as f:
+    with open(LOG_FILE, "w", encoding='utf-8') as f:
         json.dump(log_history, f, indent=2, ensure_ascii=False)
 
     # ── TELEGRAM REPORT ────────────────────────────────────────
@@ -245,7 +247,7 @@ def should_run_today(log_history):
 def load_log_history():
     if os.path.exists(LOG_FILE):
         try:
-            with open(LOG_FILE, "r") as f:
+            with open(LOG_FILE, "r", encoding='utf-8') as f:
                 return json.load(f)
         except Exception:
             return []
