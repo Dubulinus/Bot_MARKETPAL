@@ -100,6 +100,15 @@ def run_script(script_name, description):
 
     start = datetime.now()
 
+    # Timeout závisí na skriptu — Bronze stahuje 24 souborů s 13s pauzou = 300s+ minimum
+    TIMEOUTS = {
+        "tezba_polygon.py":       700,   # 24 souboru x 13s pauza = 312s + processing
+        "rafinerie_polygon.py":    60,
+        "feature_engineering.py":  60,
+        "edge_matrix.py":         120,
+    }
+    timeout = TIMEOUTS.get(script_name, 300)
+
     try:
         # FIX: nastav UTF-8 pro child proces — Windows cp1250 neumi emoji
         env = os.environ.copy()
@@ -111,7 +120,7 @@ def run_script(script_name, description):
             text=True,
             encoding='utf-8',
             errors='replace',
-            timeout=300,
+            timeout=timeout,
             env=env
         )
         duration = (datetime.now() - start).total_seconds()
@@ -131,8 +140,8 @@ def run_script(script_name, description):
         return success, duration, tail
 
     except subprocess.TimeoutExpired:
-        print(f"  ⏰ Timeout! Skript běžel déle než 5 minut.")
-        return False, 300, "TIMEOUT"
+        print(f"  ⏰ Timeout! Skript běžel déle než {timeout}s.")
+        return False, timeout, "TIMEOUT"
     except FileNotFoundError:
         print(f"  ❌ Soubor nenalezen: {script_name}")
         return False, 0, "FILE_NOT_FOUND"
