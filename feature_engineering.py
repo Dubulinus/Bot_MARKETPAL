@@ -1,472 +1,463 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║       MARKETPAL - FEATURE ENGINEERING - GOLD LAYER          ║
-║       Phase 2 | Technical Indicators + Signal Columns       ║
+║         MARKETPAL - FEATURE ENGINEERING v2                  ║
+║         Nové indikátory: Volume, Momentum, Volatility        ║
 ╚══════════════════════════════════════════════════════════════╝
 
-PIPELINE:
-    Silver (clean OHLCV)
-        → Trend indicators    (SMA, EMA, MACD)
-        → Momentum indicators (RSI, Stochastic, ROC)
-        → Volatility          (ATR, Bollinger Bands, std)
-        → Volume              (VWAP, OBV, volume ratio)
-        → Price structure     (swing highs/lows, candle patterns)
-        → Signal columns      (crossovers, overbought/oversold)
-        → Gold (feature-rich Parquet, ready for backtest + DRL)
+CO PŘIBÝVÁ oproti v1 (52 featur):
+    Volume:     OBV, MFI, Volume Z-score, Volume spike
+    Momentum:   Stochastic %K/%D, Williams %R, CCI, ROC, CMO
+    Volatility: Keltner Channels, Donchian Channels, ATR ratio
+    Pattern:    Inside bar, Engulfing, Pin bar, Doji
+    Composite:  RSI + Volume kombinace, BB + Stoch kombinace
 
-WHY GOLD LAYER?
-    You compute indicators ONCE here, not inside every strategy.
-    Your backtester, DRL agent, and live bot all read from the same
-    Gold files. Change an indicator param? Rerun this script once.
-    Everything downstream gets updated automatically. Clean architecture.
-
-INDICATOR REFERENCE (for when you forget what each does):
-    SMA   - Simple Moving Average. Trend direction, support/resistance.
-    EMA   - Exponential MA. Reacts faster to recent price than SMA.
-    MACD  - Momentum oscillator. Crossover of two EMAs. Trend changes.
-    RSI   - Relative Strength Index. 0-100. >70 overbought, <30 oversold.
-    ATR   - Average True Range. Volatility measure. Used for stop-loss sizing.
-    BB    - Bollinger Bands. Price envelope 2 std dev from SMA. Breakouts.
-    VWAP  - Volume Weighted Average Price. Institutional reference price.
-    OBV   - On-Balance Volume. Confirms if volume supports price move.
-    Stoch - Stochastic Oscillator. Like RSI but uses high/low range.
-    ROC   - Rate of Change. Raw momentum. How fast price is moving.
+NOVÉ SIGNÁLY (k testování v edge matrix):
+    signal_stoch_oversold_exit   — Stoch < 20 pak kříží nahoru
+    signal_stoch_overbought_exit — Stoch > 80 pak kříží dolů
+    signal_cci_oversold          — CCI < -100 reversal
+    signal_cci_overbought        — CCI > +100 reversal
+    signal_volume_spike_bull     — objem > 2x průměr + zelená svíčka
+    signal_volume_spike_bear     — objem > 2x průměr + červená svíčka
+    signal_mfi_oversold          — MFI < 20 (RSI s volume)
+    signal_mfi_overbought        — MFI > 80
+    signal_keltner_breakout_up   — cena probíjí horní Keltner band
+    signal_keltner_breakout_down — cena probíjí dolní Keltner band
+    signal_donchian_break_up     — nové N-denní high (momentum)
+    signal_donchian_break_down   — nové N-denní low
+    signal_pin_bar_bull          — pin bar se spodním knitem (reversal)
+    signal_pin_bar_bear          — pin bar s horním knitem (reversal)
+    signal_engulfing_bull        — bullish engulfing pattern
+    signal_engulfing_bear        — bearish engulfing pattern
+    signal_inside_bar_break_up   — inside bar probití nahoru
+    signal_inside_bar_break_down — inside bar probití dolů
+    signal_roc_bull              — Rate of Change překračuje 0 zdola
+    signal_williams_oversold     — Williams %R < -80 reversal
+    signal_williams_overbought   — Williams %R > -20 reversal
 """
 
 import os
 import pandas as pd
 import numpy as np
+from pathlib import Path
 from datetime import datetime
 
 # ─── CONFIG ────────────────────────────────────────────────────
 
-INPUT_DIR  = "data/03_SILVER_CLEAN"
-OUTPUT_DIR = "data/04_GOLD_FEATURES"
+INPUT_DIR  = "data/04_GOLD_FEATURES"   # čteme existující Gold data
+OUTPUT_DIR = "data/04_GOLD_FEATURES"   # přepisujeme na místě (přidáváme sloupce)
 
-TIMEFRAMES = ["M5", "M15", "H1"]
-CATEGORIES = ["forex", "stocks"]
+TIMEFRAMES  = ["M5", "M15", "H1"]
+CATEGORIES  = {"forex": ["EURUSD", "GBPUSD", "USDJPY", "USDCHF"],
+               "stocks": ["AAPL", "MSFT", "NVDA", "AMZN"]}
 
-# Indicator parameters — tweak these when searching for edge
-# These are the standard "textbook" values used by most traders
-PARAMS = {
-    "sma_fast":       10,    # Fast SMA — reacts quickly to price
-    "sma_slow":       50,    # Slow SMA — trend filter
-    "sma_trend":      200,   # Long-term trend direction
-    "ema_fast":       12,    # EMA for MACD calculation
-    "ema_slow":       26,    # EMA for MACD calculation
-    "ema_signal":     9,     # MACD signal line smoothing
-    "rsi_period":     14,    # Standard RSI period
-    "atr_period":     14,    # ATR for volatility / stop-loss
-    "bb_period":      20,    # Bollinger Bands SMA period
-    "bb_std":         2.0,   # Bollinger Bands std deviation multiplier
-    "stoch_k":        14,    # Stochastic %K period
-    "stoch_d":        3,     # Stochastic %D smoothing
-    "roc_period":     10,    # Rate of Change period
-    "obv_ema":        20,    # OBV smoothing period
-    "swing_lookback": 5,     # Bars left/right to confirm swing high/low
-}
+# Parametry indikátorů
+STOCH_K     = 14    # Stochastic %K perioda
+STOCH_D     = 3     # Stochastic %D vyhlazení
+CCI_PERIOD  = 20    # CCI perioda
+MFI_PERIOD  = 14    # Money Flow Index perioda
+ROC_PERIOD  = 10    # Rate of Change perioda
+KELTNER_EMA = 20    # Keltner Channel EMA
+KELTNER_ATR = 2.0   # Keltner Channel ATR multiplikátor
+DONCHIAN_N  = 20    # Donchian Channel perioda
+VOL_MA      = 20    # Volume moving average pro spike detekci
+VOL_SPIKE   = 2.0   # Kolikrát musí objem překročit průměr
 
-# ─── INDICATOR FUNCTIONS ───────────────────────────────────────
-# Each function takes a DataFrame and returns it with new columns added.
-# We never modify a column that already exists — always add new ones.
+# ─── VOLUME INDIKÁTORY ─────────────────────────────────────────
 
-def add_sma(df):
-    """
-    Simple Moving Average — average closing price over N periods.
-    SMA_fast < price < SMA_slow = potential uptrend.
-    Price below SMA_trend (200) = bearish regime overall.
-    """
-    df[f"sma_{PARAMS['sma_fast']}"]  = df["close"].rolling(PARAMS["sma_fast"]).mean()
-    df[f"sma_{PARAMS['sma_slow']}"]  = df["close"].rolling(PARAMS["sma_slow"]).mean()
-    df[f"sma_{PARAMS['sma_trend']}"] = df["close"].rolling(PARAMS["sma_trend"]).mean()
+def add_obv(df):
+    """On-Balance Volume — kumulativní volume podle směru svíčky."""
+    direction = np.sign(df["close"] - df["close"].shift(1))
+    obv = (direction * df["volume"]).fillna(0).cumsum()
+    df["obv"]          = obv
+    df["obv_ma"]       = obv.rolling(20).mean()
+    df["obv_rising"]   = obv > obv.shift(3)   # OBV roste → akumulace
     return df
 
 
-def add_ema(df):
+def add_mfi(df, period=MFI_PERIOD):
     """
-    Exponential Moving Average — like SMA but gives more weight to recent candles.
-    Reacts faster to price changes. Better for detecting early trend shifts.
+    Money Flow Index — RSI ale s objemem.
+    MFI < 20 = oversold, MFI > 80 = overbought.
     """
-    df[f"ema_{PARAMS['ema_fast']}"] = df["close"].ewm(span=PARAMS["ema_fast"], adjust=False).mean()
-    df[f"ema_{PARAMS['ema_slow']}"] = df["close"].ewm(span=PARAMS["ema_slow"], adjust=False).mean()
+    tp  = (df["high"] + df["low"] + df["close"]) / 3   # typical price
+    rmf = tp * df["volume"]                              # raw money flow
+
+    pos_mf = rmf.where(tp > tp.shift(1), 0)
+    neg_mf = rmf.where(tp < tp.shift(1), 0)
+
+    pos_sum = pos_mf.rolling(period).sum()
+    neg_sum = neg_mf.rolling(period).sum()
+
+    mfr = pos_sum / neg_sum.replace(0, np.nan)
+    df["mfi"] = 100 - (100 / (1 + mfr))
     return df
 
 
-def add_macd(df):
-    """
-    MACD = EMA(12) - EMA(26)
-    Signal = EMA(9) of MACD
-    Histogram = MACD - Signal
+def add_volume_features(df):
+    """Volume spike detekce a Z-score."""
+    vol_ma  = df["volume"].rolling(VOL_MA).mean()
+    vol_std = df["volume"].rolling(VOL_MA).std()
 
-    When MACD crosses above Signal → bullish momentum
-    When MACD crosses below Signal → bearish momentum
-    Histogram growing = momentum accelerating
-    """
-    ema_fast   = df["close"].ewm(span=PARAMS["ema_fast"],   adjust=False).mean()
-    ema_slow   = df["close"].ewm(span=PARAMS["ema_slow"],   adjust=False).mean()
-    macd_line  = ema_fast - ema_slow
-    signal     = macd_line.ewm(span=PARAMS["ema_signal"],   adjust=False).mean()
+    df["volume_ma"]      = vol_ma
+    df["volume_zscore"]  = (df["volume"] - vol_ma) / vol_std.replace(0, np.nan)
+    df["volume_ratio"]   = df["volume"] / vol_ma.replace(0, np.nan)
 
-    df["macd"]           = macd_line
-    df["macd_signal"]    = signal
-    df["macd_histogram"] = macd_line - signal
+    is_spike = df["volume_ratio"] > VOL_SPIKE
+    is_green  = df["close"] > df["open"]
+    is_red    = df["close"] < df["open"]
+
+    df["signal_volume_spike_bull"] = (is_spike & is_green).astype(bool)
+    df["signal_volume_spike_bear"] = (is_spike & is_red).astype(bool)
     return df
 
 
-def add_rsi(df):
+# ─── MOMENTUM INDIKÁTORY ───────────────────────────────────────
+
+def add_stochastic(df, k=STOCH_K, d=STOCH_D):
     """
-    RSI measures speed and magnitude of price changes.
-    Scale: 0-100.
-        > 70 = overbought (potential sell)
-        < 30 = oversold   (potential buy)
-        50   = neutral
-
-    We also add rsi_zone column for easy signal generation:
-        'overbought', 'oversold', 'neutral'
+    Stochastic Oscillator %K a %D.
+    Klasický mean-reversion indikátor.
     """
-    delta  = df["close"].diff()
-    gain   = delta.clip(lower=0)
-    loss   = (-delta).clip(lower=0)
+    lowest_low   = df["low"].rolling(k).min()
+    highest_high = df["high"].rolling(k).max()
+    hl_range     = (highest_high - lowest_low).replace(0, np.nan)
 
-    avg_gain = gain.ewm(com=PARAMS["rsi_period"] - 1, adjust=False).mean()
-    avg_loss = loss.ewm(com=PARAMS["rsi_period"] - 1, adjust=False).mean()
-
-    rs  = avg_gain / avg_loss.replace(0, np.nan)
-    rsi = 100 - (100 / (1 + rs))
-
-    df["rsi"] = rsi
-
-    # Zone classification — useful for DRL state representation
-    df["rsi_zone"] = "neutral"
-    df.loc[df["rsi"] > 70, "rsi_zone"] = "overbought"
-    df.loc[df["rsi"] < 30, "rsi_zone"] = "oversold"
-
-    return df
-
-
-def add_atr(df):
-    """
-    ATR = Average True Range. Measures volatility.
-    True Range = max of:
-        - High - Low
-        - |High - Previous Close|
-        - |Low  - Previous Close|
-
-    WHY IT MATTERS FOR FTMO:
-        Stop-loss sizing. If ATR(14) on EURUSD M15 = 0.0015,
-        you know average candle volatility is 15 pips.
-        Your stop should be at least 1-2x ATR away to avoid noise.
-
-    atr_pct = ATR as % of price → comparable across instruments
-    """
-    prev_close = df["close"].shift(1)
-    tr = pd.concat([
-        df["high"] - df["low"],
-        (df["high"] - prev_close).abs(),
-        (df["low"]  - prev_close).abs()
-    ], axis=1).max(axis=1)
-
-    df["atr"]     = tr.ewm(com=PARAMS["atr_period"] - 1, adjust=False).mean()
-    df["atr_pct"] = (df["atr"] / df["close"]) * 100   # Volatility as % of price
-    return df
-
-
-def add_bollinger_bands(df):
-    """
-    Bollinger Bands = SMA ± (2 × std deviation of last 20 closes)
-
-    Price near upper band = overbought / breakout candidate
-    Price near lower band = oversold / breakdown candidate
-    Bands squeezing together = low volatility, big move incoming
-
-    bb_position: 0 = at lower band, 0.5 = at middle, 1 = at upper band
-    bb_squeeze:  True when bands are unusually narrow (volatility contraction)
-    """
-    sma   = df["close"].rolling(PARAMS["bb_period"]).mean()
-    std   = df["close"].rolling(PARAMS["bb_period"]).std()
-
-    df["bb_upper"]  = sma + (PARAMS["bb_std"] * std)
-    df["bb_middle"] = sma
-    df["bb_lower"]  = sma - (PARAMS["bb_std"] * std)
-    df["bb_width"]  = (df["bb_upper"] - df["bb_lower"]) / df["bb_middle"]
-
-    # Where is price within the bands? 0 = lower, 1 = upper
-    band_range = df["bb_upper"] - df["bb_lower"]
-    df["bb_position"] = (df["close"] - df["bb_lower"]) / band_range.replace(0, np.nan)
-
-    # Squeeze = band width in bottom 20th percentile of last 100 candles
-    bb_width_rolling_min = df["bb_width"].rolling(100).quantile(0.20)
-    df["bb_squeeze"] = df["bb_width"] <= bb_width_rolling_min
-
-    return df
-
-
-def add_stochastic(df):
-    """
-    Stochastic Oscillator — where is current close relative to recent range?
-    %K = (Close - Lowest Low) / (Highest High - Lowest Low) × 100
-    %D = 3-period SMA of %K (signal line)
-
-    Like RSI but uses high/low range instead of price momentum.
-    Best used in combination with RSI for confirmation.
-    """
-    low_min  = df["low"].rolling(PARAMS["stoch_k"]).min()
-    high_max = df["high"].rolling(PARAMS["stoch_k"]).max()
-
-    stoch_k = 100 * (df["close"] - low_min) / (high_max - low_min).replace(0, np.nan)
-    stoch_d = stoch_k.rolling(PARAMS["stoch_d"]).mean()
+    stoch_k = 100 * (df["close"] - lowest_low) / hl_range
+    stoch_d = stoch_k.rolling(d).mean()
 
     df["stoch_k"] = stoch_k
     df["stoch_d"] = stoch_d
-    return df
 
+    # Signály: kříží ze zóny
+    prev_k = stoch_k.shift(1)
+    prev_d = stoch_d.shift(1)
 
-def add_roc(df):
-    """
-    Rate of Change — how much has price moved in the last N candles, in %.
-    Positive = upward momentum, Negative = downward momentum.
-    Good for detecting acceleration/deceleration of trends.
-    """
-    df["roc"] = df["close"].pct_change(periods=PARAMS["roc_period"]) * 100
-    return df
+    # Oversold exit: byl pod 20, %K kříží %D nahoru
+    df["signal_stoch_oversold_exit"]   = (
+        (prev_k < 20) & (stoch_k > stoch_d) & (prev_k <= prev_d)
+    ).astype(bool)
 
-
-def add_vwap(df):
-    """
-    VWAP = Volume Weighted Average Price.
-    The 'fair value' price institutions use as reference.
-
-    Price above VWAP = bullish bias (buyers in control)
-    Price below VWAP = bearish bias (sellers in control)
-
-    Note: VWAP is most meaningful intraday. We compute it as
-    a rolling VWAP over the last 20 candles — a proxy that works
-    across timeframes without session reset logic.
-
-    vwap_distance_pct: how far price is from VWAP in %
-    """
-    typical_price = (df["high"] + df["low"] + df["close"]) / 3
-    tp_volume     = typical_price * df["volume"]
-
-    rolling_tpv = tp_volume.rolling(20).sum()
-    rolling_vol = df["volume"].rolling(20).sum()
-
-    df["vwap"] = rolling_tpv / rolling_vol.replace(0, np.nan)
-    df["vwap_distance_pct"] = ((df["close"] - df["vwap"]) / df["vwap"]) * 100
-    return df
-
-
-def add_obv(df):
-    """
-    On-Balance Volume — cumulative volume indicator.
-    If price closes up → add volume. If closes down → subtract volume.
-
-    Rising OBV with rising price = trend confirmed by volume (strong)
-    Rising price but falling OBV = divergence, potential reversal
-
-    obv_ema: smoothed OBV to reduce noise
-    obv_trend: is OBV trending up or down vs its own EMA?
-    """
-    obv = (np.sign(df["close"].diff()) * df["volume"]).fillna(0).cumsum()
-    df["obv"]     = obv
-    df["obv_ema"] = obv.ewm(span=PARAMS["obv_ema"], adjust=False).mean()
-    df["obv_trend"] = np.sign(df["obv"] - df["obv_ema"]).astype(int)
-    return df
-
-
-def add_swing_points(df):
-    """
-    Detect swing highs and lows — the building blocks of market structure.
-    A swing high = candle whose high is higher than N candles left and right.
-    A swing low  = candle whose low  is lower  than N candles left and right.
-
-    Why this matters: Support/resistance, trend structure, DRL state.
-    swing_high / swing_low = True at the pivot candle.
-    """
-    n = PARAMS["swing_lookback"]
-    highs = df["high"]
-    lows  = df["low"]
-
-    # Rolling max/min over the window centered on each candle
-    swing_high = (highs == highs.rolling(2 * n + 1, center=True).max())
-    swing_low  = (lows  == lows.rolling(2 * n + 1, center=True).min())
-
-    df["swing_high"] = swing_high
-    df["swing_low"]  = swing_low
-    return df
-
-
-def add_signal_columns(df):
-    """
-    Pre-computed signal columns — boolean flags that strategies can use directly.
-    These combine multiple indicators into ready-to-use trading signals.
-
-    Think of these as the "observations" your DRL agent will read.
-    Having them pre-computed means the agent doesn't need to calculate
-    anything — it just reads True/False values. Faster training, cleaner code.
-    """
-    sma_f = f"sma_{PARAMS['sma_fast']}"
-    sma_s = f"sma_{PARAMS['sma_slow']}"
-
-    # SMA Golden Cross: fast crosses above slow (bullish)
-    df["signal_golden_cross"] = (
-        (df[sma_f] > df[sma_s]) &
-        (df[sma_f].shift(1) <= df[sma_s].shift(1))
-    )
-
-    # SMA Death Cross: fast crosses below slow (bearish)
-    df["signal_death_cross"] = (
-        (df[sma_f] < df[sma_s]) &
-        (df[sma_f].shift(1) >= df[sma_s].shift(1))
-    )
-
-    # MACD bullish crossover
-    df["signal_macd_bull"] = (
-        (df["macd"] > df["macd_signal"]) &
-        (df["macd"].shift(1) <= df["macd_signal"].shift(1))
-    )
-
-    # MACD bearish crossover
-    df["signal_macd_bear"] = (
-        (df["macd"] < df["macd_signal"]) &
-        (df["macd"].shift(1) >= df["macd_signal"].shift(1))
-    )
-
-    # RSI reversal signals
-    df["signal_rsi_oversold_exit"]    = (df["rsi"] > 30) & (df["rsi"].shift(1) <= 30)
-    df["signal_rsi_overbought_exit"]  = (df["rsi"] < 70) & (df["rsi"].shift(1) >= 70)
-
-    # Bollinger breakout signals
-    df["signal_bb_breakout_up"]   = df["close"] > df["bb_upper"]
-    df["signal_bb_breakout_down"] = df["close"] < df["bb_lower"]
-
-    # Price above/below VWAP
-    df["signal_above_vwap"] = df["close"] > df["vwap"]
-
-    # Trend regime: is price above the 200 SMA? (long-term bull/bear)
-    sma_trend_col = f"sma_{PARAMS['sma_trend']}"
-    if sma_trend_col in df.columns:
-        df["signal_bull_regime"] = df["close"] > df[sma_trend_col]
-    else:
-        df["signal_bull_regime"] = np.nan   # Not enough data for 200 SMA
+    # Overbought exit: byl nad 80, %K kříží %D dolů
+    df["signal_stoch_overbought_exit"] = (
+        (prev_k > 80) & (stoch_k < stoch_d) & (prev_k >= prev_d)
+    ).astype(bool)
 
     return df
 
 
-# ─── PIPELINE ──────────────────────────────────────────────────
-
-def run_feature_pipeline(df, ticker, tf_name):
+def add_williams_r(df, period=14):
     """
-    Run all indicator functions in order.
-    Order matters: some indicators (signals) depend on earlier ones.
+    Williams %R — podobný Stochastics ale invertovaný.
+    -80 až -100 = oversold, -0 až -20 = overbought.
     """
-    print(f"  ⚙️  Computing indicators for {ticker} ({tf_name})...")
+    highest_high = df["high"].rolling(period).max()
+    lowest_low   = df["low"].rolling(period).min()
+    hl_range     = (highest_high - lowest_low).replace(0, np.nan)
 
-    df = add_sma(df)
-    df = add_ema(df)
-    df = add_macd(df)
-    df = add_rsi(df)
-    df = add_atr(df)
-    df = add_bollinger_bands(df)
-    df = add_stochastic(df)
-    df = add_roc(df)
-    df = add_vwap(df)
+    wr = -100 * (highest_high - df["close"]) / hl_range
+    df["williams_r"] = wr
+
+    df["signal_williams_oversold"]   = (
+        (wr.shift(1) < -80) & (wr > -80)
+    ).astype(bool)
+
+    df["signal_williams_overbought"] = (
+        (wr.shift(1) > -20) & (wr < -20)
+    ).astype(bool)
+
+    return df
+
+
+def add_cci(df, period=CCI_PERIOD):
+    """
+    Commodity Channel Index.
+    CCI > +100 = overbought, CCI < -100 = oversold.
+    """
+    tp      = (df["high"] + df["low"] + df["close"]) / 3
+    tp_ma   = tp.rolling(period).mean()
+    # Mean Absolute Deviation
+    mad     = tp.rolling(period).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
+    cci     = (tp - tp_ma) / (0.015 * mad.replace(0, np.nan))
+
+    df["cci"] = cci
+
+    df["signal_cci_oversold"]   = (
+        (cci.shift(1) < -100) & (cci > -100)
+    ).astype(bool)
+
+    df["signal_cci_overbought"] = (
+        (cci.shift(1) > 100) & (cci < 100)
+    ).astype(bool)
+
+    return df
+
+
+def add_roc(df, period=ROC_PERIOD):
+    """Rate of Change — momentum indikátor."""
+    roc = 100 * (df["close"] - df["close"].shift(period)) / df["close"].shift(period)
+    df["roc"] = roc
+
+    df["signal_roc_bull"] = (
+        (roc.shift(1) < 0) & (roc > 0)
+    ).astype(bool)
+
+    df["signal_roc_bear"] = (
+        (roc.shift(1) > 0) & (roc < 0)
+    ).astype(bool)
+
+    return df
+
+
+# ─── VOLATILITY INDIKÁTORY ─────────────────────────────────────
+
+def add_keltner_channels(df, ema_period=KELTNER_EMA, atr_mult=KELTNER_ATR):
+    """
+    Keltner Channels — ATR-based pasma.
+    Podobné Bollinger Bands ale používají ATR místo std.
+    """
+    ema  = df["close"].ewm(span=ema_period).mean()
+    atr  = df.get("atr", (df["high"] - df["low"]).rolling(14).mean())
+
+    upper = ema + atr_mult * atr
+    lower = ema - atr_mult * atr
+
+    df["keltner_upper"]  = upper
+    df["keltner_middle"] = ema
+    df["keltner_lower"]  = lower
+
+    # Breakout signály
+    df["signal_keltner_breakout_up"]   = (
+        (df["close"].shift(1) <= upper.shift(1)) & (df["close"] > upper)
+    ).astype(bool)
+
+    df["signal_keltner_breakout_down"] = (
+        (df["close"].shift(1) >= lower.shift(1)) & (df["close"] < lower)
+    ).astype(bool)
+
+    # Squeeze: Keltner užší než BB → exploze čeká
+    if "bb_upper" in df.columns and "bb_lower" in df.columns:
+        bb_width      = df["bb_upper"] - df["bb_lower"]
+        kelt_width    = upper - lower
+        df["squeeze"] = (bb_width < kelt_width).astype(bool)
+
+    return df
+
+
+def add_donchian_channels(df, period=DONCHIAN_N):
+    """
+    Donchian Channels — highest high / lowest low za N svíček.
+    Probití = momentum breakout signál.
+    """
+    upper = df["high"].rolling(period).max()
+    lower = df["low"].rolling(period).min()
+    mid   = (upper + lower) / 2
+
+    df["donchian_upper"]  = upper
+    df["donchian_lower"]  = lower
+    df["donchian_middle"] = mid
+
+    # Breakout = nové N-perioda high/low
+    df["signal_donchian_break_up"]   = (
+        df["high"] >= upper.shift(1)
+    ).astype(bool)
+
+    df["signal_donchian_break_down"] = (
+        df["low"] <= lower.shift(1)
+    ).astype(bool)
+
+    return df
+
+
+def add_atr_ratio(df):
+    """ATR ratio — aktuální volatilita vs průměrná."""
+    if "atr" not in df.columns:
+        return df
+    atr_ma = df["atr"].rolling(50).mean()
+    df["atr_ratio"] = df["atr"] / atr_ma.replace(0, np.nan)
+    df["high_volatility"] = (df["atr_ratio"] > 1.5).astype(bool)
+    df["low_volatility"]  = (df["atr_ratio"] < 0.7).astype(bool)
+    return df
+
+
+# ─── PATTERN RECOGNITION ───────────────────────────────────────
+
+def add_candlestick_patterns(df):
+    """
+    Základní svíčkové patterny.
+    Marcos: nepouž je samotné, kombinuj s potvrzením (volume, trend).
+    """
+    o = df["open"]
+    h = df["high"]
+    l = df["low"]
+    c = df["close"]
+
+    body      = (c - o).abs()
+    candle_range = h - l
+    upper_wick = h - c.where(c > o, o)
+    lower_wick = c.where(c > o, o) - l
+
+    # Pin bar bull — dlouhý dolní knítek, malé tělo nahoře
+    df["signal_pin_bar_bull"] = (
+        (lower_wick > 2 * body) &
+        (lower_wick > 0.6 * candle_range) &
+        (body > 0)
+    ).astype(bool)
+
+    # Pin bar bear — dlouhý horní knítek, malé tělo dole
+    df["signal_pin_bar_bear"] = (
+        (upper_wick > 2 * body) &
+        (upper_wick > 0.6 * candle_range) &
+        (body > 0)
+    ).astype(bool)
+
+    # Engulfing bull — červená pak větší zelená
+    prev_red   = o.shift(1) > c.shift(1)
+    curr_green = c > o
+    engulf_b   = c > o.shift(1)
+    engulf_b2  = o < c.shift(1)
+    df["signal_engulfing_bull"] = (prev_red & curr_green & engulf_b & engulf_b2).astype(bool)
+
+    # Engulfing bear — zelená pak větší červená
+    prev_green = c.shift(1) > o.shift(1)
+    curr_red   = o > c
+    engulf_be  = o > c.shift(1)
+    engulf_be2 = c < o.shift(1)
+    df["signal_engulfing_bear"] = (prev_green & curr_red & engulf_be & engulf_be2).astype(bool)
+
+    # Inside bar — celá svíčka uvnitř předchozí (komprese = breakout čeká)
+    inside = (h < h.shift(1)) & (l > l.shift(1))
+    # Breakout z inside baru
+    df["signal_inside_bar_break_up"]   = (inside.shift(1) & (h > h.shift(2))).astype(bool)
+    df["signal_inside_bar_break_down"] = (inside.shift(1) & (l < l.shift(2))).astype(bool)
+
+    # Doji — velmi malé tělo
+    df["doji"] = (body < 0.1 * candle_range).astype(bool)
+
+    return df
+
+
+# ─── KOMBINOVANÉ SIGNÁLY ───────────────────────────────────────
+
+def add_composite_signals(df):
+    """
+    Kombinace více indikátorů = silnější signal.
+    Marcos: jeden indikátor je šum, kombinace je edge.
+    """
+    # RSI oversold + Volume spike = silný reversal
+    if "signal_rsi_oversold" in df.columns:
+        df["signal_rsi_vol_bull"] = (
+            df.get("signal_rsi_oversold", False) &
+            df.get("signal_volume_spike_bull", False)
+        ).astype(bool)
+
+    # Stoch overbought + Pin bar bear = silný short signal
+    if "signal_stoch_overbought_exit" in df.columns:
+        df["signal_stoch_pin_bear"] = (
+            df.get("signal_stoch_overbought_exit", False) &
+            df.get("signal_pin_bar_bear", False)
+        ).astype(bool)
+
+    # MFI oversold + Engulfing bull
+    if "mfi" in df.columns:
+        df["signal_mfi_oversold"]   = (df["mfi"] < 20).astype(bool)
+        df["signal_mfi_overbought"] = (df["mfi"] > 80).astype(bool)
+
+        df["signal_mfi_engulf_bull"] = (
+            df.get("signal_mfi_oversold", False) &
+            df.get("signal_engulfing_bull", False)
+        ).astype(bool)
+
+    # Donchian breakout + high volume = momentum continuation
+    if "signal_donchian_break_up" in df.columns:
+        df["signal_donchian_vol_bull"] = (
+            df.get("signal_donchian_break_up", False) &
+            (df.get("volume_ratio", 0) > 1.5)
+        ).astype(bool)
+
+        df["signal_donchian_vol_bear"] = (
+            df.get("signal_donchian_break_down", False) &
+            (df.get("volume_ratio", 0) > 1.5)
+        ).astype(bool)
+
+    return df
+
+
+# ─── HLAVNÍ FUNKCE ─────────────────────────────────────────────
+
+def add_all_new_features(df):
+    """Přidá všechny nové v2 featury do DataFrame."""
     df = add_obv(df)
-    df = add_swing_points(df)
-    df = add_signal_columns(df)   # Must be last — uses columns from above
-
-    # How many NaN rows at the start? (indicator warmup period)
-    # SMA 200 needs 200 rows before it has a valid value.
-    # We report this so you know how much data is "wasted" on warmup.
-    warmup_rows = df["rsi"].isna().sum()
-    total_cols  = len(df.columns)
-
-    print(f"  ✅ {ticker} ({tf_name}): {total_cols} columns | {len(df)} rows | {warmup_rows} warmup NaN rows")
-
+    df = add_mfi(df)
+    df = add_volume_features(df)
+    df = add_stochastic(df)
+    df = add_williams_r(df)
+    df = add_cci(df)
+    df = add_roc(df)
+    df = add_keltner_channels(df)
+    df = add_donchian_channels(df)
+    df = add_atr_ratio(df)
+    df = add_candlestick_patterns(df)
+    df = add_composite_signals(df)
     return df
 
 
-# ─── MAIN ──────────────────────────────────────────────────────
+def count_new_signals(df):
+    """Spočítej nové signal_ sloupce."""
+    return [c for c in df.columns if c.startswith("signal_")]
+
+
+def process_file(path):
+    """Načte Gold parquet, přidá nové featury, uloží zpět."""
+    df = pd.read_parquet(path)
+    original_cols = len(df.columns)
+
+    df = add_all_new_features(df)
+
+    new_cols    = len(df.columns) - original_cols
+    new_signals = count_new_signals(df)
+
+    df.to_parquet(path, index=False)
+    return new_cols, len(new_signals)
+
 
 def main():
     print("╔══════════════════════════════════════════╗")
-    print("║  MARKETPAL FEATURE ENGINEERING - GOLD   ║")
-    print(f"║  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}                    ║")
+    print("║   MARKETPAL FEATURE ENGINEERING v2      ║")
+    print(f"║   {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}                  ║")
     print("╚══════════════════════════════════════════╝\n")
+    print("  Přidávám: Volume, Momentum, Volatility, Patterns\n")
 
-    # Create output folders
+    total_files   = 0
+    total_ok      = 0
+    all_new_cols  = 0
+    signal_count  = 0
+
     for tf in TIMEFRAMES:
-        for cat in CATEGORIES:
-            os.makedirs(os.path.join(OUTPUT_DIR, tf, cat), exist_ok=True)
-    print(f"✅ Gold layer folders ready at: {OUTPUT_DIR}\n")
+        print(f"\n⏱️  Timeframe: {tf}")
+        for category, tickers in CATEGORIES.items():
+            for ticker in tickers:
+                path = Path(INPUT_DIR) / tf / category / f"{ticker}.parquet"
+                if not path.exists():
+                    print(f"  ⚠️  {ticker}: soubor nenalezen ({path})")
+                    continue
 
-    total_ok   = 0
-    total_fail = 0
-    summary    = []
-
-    for tf_name in TIMEFRAMES:
-        for category in CATEGORIES:
-            input_folder  = os.path.join(INPUT_DIR,  tf_name, category)
-            output_folder = os.path.join(OUTPUT_DIR, tf_name, category)
-
-            if not os.path.exists(input_folder):
-                print(f"⚠️  Folder not found, skipping: {input_folder}")
-                continue
-
-            parquet_files = sorted([f for f in os.listdir(input_folder) if f.endswith(".parquet")])
-
-            if not parquet_files:
-                print(f"⚠️  No files in: {input_folder}")
-                continue
-
-            print(f"{'═'*55}")
-            print(f"📂 {tf_name} / {category.upper()} — {len(parquet_files)} files")
-            print(f"{'═'*55}")
-
-            for filename in parquet_files:
-                ticker       = filename.replace(".parquet", "")
-                input_path   = os.path.join(input_folder,  filename)
-                output_path  = os.path.join(output_folder, filename)
-
+                total_files += 1
                 try:
-                    df = pd.read_parquet(input_path)
-
-                    if len(df) < PARAMS["sma_trend"] + 10:
-                        print(f"  ⚠️  {ticker} ({tf_name}): only {len(df)} rows — too short for SMA200, skipping")
-                        total_fail += 1
-                        continue
-
-                    df = run_feature_pipeline(df, ticker, tf_name)
-                    df.to_parquet(output_path)
-
-                    summary.append({
-                        "ticker":   ticker,
-                        "tf":       tf_name,
-                        "rows":     len(df),
-                        "columns":  len(df.columns),
-                        "signals":  len([c for c in df.columns if c.startswith("signal_")])
-                    })
-                    total_ok += 1
-
+                    new_cols, n_signals = process_file(path)
+                    all_new_cols += new_cols
+                    signal_count  = n_signals  # stejné pro všechny
+                    total_ok     += 1
+                    print(f"  ✅ {ticker:8} +{new_cols} featur, {n_signals} signálů celkem")
                 except Exception as e:
-                    print(f"  ❌ Failed: {ticker} ({tf_name}): {e}")
-                    total_fail += 1
+                    print(f"  ❌ {ticker}: {e}")
 
-    # ── SUMMARY ────────────────────────────────────────────────
-    print(f"\n{'═'*65}")
-    print("📋 GOLD LAYER SUMMARY")
-    print(f"{'═'*65}")
-    print(f"{'Instrument':<20} {'TF':<6} {'Rows':<8} {'Columns':<10} {'Signals'}")
-    print(f"{'─'*65}")
-    for r in summary:
-        print(f"{r['ticker']:<20} {r['tf']:<6} {r['rows']:<8} {r['columns']:<10} {r['signals']}")
-    print(f"{'═'*65}")
-
-    print(f"\n✅ Gold layer complete: {total_ok} files processed")
-    if total_fail > 0:
-        print(f"⚠️  {total_fail} files skipped (too short for indicators)")
-    print(f"📁 Output: {OUTPUT_DIR}")
-    print(f"\n💡 Next step: edge_matrix.py — find which signals actually have edge")
+    print(f"\n{'═'*45}")
+    print(f"📋 SOUHRN")
+    print(f"{'═'*45}")
+    print(f"  Souborů zpracováno: {total_ok}/{total_files}")
+    print(f"  Nových featur:      +{all_new_cols // max(total_ok, 1)} na soubor")
+    print(f"  Signálů celkem:     {signal_count}")
+    print(f"\n  💡 Další krok: spusť edge_matrix.py pro nové signály")
 
 
 if __name__ == "__main__":

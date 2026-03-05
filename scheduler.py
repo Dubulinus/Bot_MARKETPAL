@@ -43,6 +43,8 @@ import subprocess
 import json
 from datetime import datetime, time as dtime
 import requests  # pip install requests
+from dotenv import load_dotenv
+load_dotenv()
 
 # ─── CONFIG ────────────────────────────────────────────────────
 
@@ -54,7 +56,7 @@ RUN_MINUTE = 0
 # Získej token: @BotFather na Telegramu → /newbot
 # Získej chat_id: pošli botu zprávu, pak:
 # https://api.telegram.org/bot<TOKEN>/getUpdates
-TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN",   "")
+TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN01",   "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # Skripty ke spuštění v pořadí
