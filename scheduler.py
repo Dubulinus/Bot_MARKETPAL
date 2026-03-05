@@ -43,8 +43,6 @@ import subprocess
 import json
 from datetime import datetime, time as dtime
 import requests  # pip install requests
-from dotenv import load_dotenv
-load_dotenv()
 
 # ─── CONFIG ────────────────────────────────────────────────────
 
@@ -56,7 +54,7 @@ RUN_MINUTE = 0
 # Získej token: @BotFather na Telegramu → /newbot
 # Získej chat_id: pošli botu zprávu, pak:
 # https://api.telegram.org/bot<TOKEN>/getUpdates
-TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN01",   "")
+TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN",   "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # Skripty ke spuštění v pořadí
@@ -65,6 +63,7 @@ PIPELINE_SCRIPTS = [
     ("rafinerie_polygon.py",   "🔬 Silver — čištění dat"),
     ("feature_engineering.py", "⚙️  Gold  — výpočet featur"),
     ("edge_matrix.py",         "🎯 Edge  — validace signálů"),
+    ("mt5_executor.py --once",  "🚀 MT5   — první kontrola signálů"),
 ]
 
 # Log soubor
@@ -108,6 +107,7 @@ def run_script(script_name, description):
         "rafinerie_polygon.py":    60,
         "feature_engineering.py":  60,
         "edge_matrix.py":         120,
+        "mt5_executor.py --once":   30,
     }
     timeout = TIMEOUTS.get(script_name, 300)
 
@@ -243,8 +243,51 @@ def run_full_pipeline():
 
     send_telegram(message)
 
+    # Po úspěšné pipeline spusť executor loop v background threadu
+    if all_ok and "--now" not in sys.argv:
+        import threading
+        t = threading.Thread(target=run_executor_loop, daemon=True)
+        t.start()
+        print("\n  🚀 MT5 Executor loop spuštěn v pozadí")
+
     return all_ok
 
+
+
+
+# ─── MT5 EXECUTOR LOOP ─────────────────────────────────────────
+
+def run_executor_loop():
+    """
+    Spustí mt5_executor.py každých EXECUTOR_LOOP_MINUTES minut.
+    Volá se po úspěšné ranní pipeline a běží celý den.
+    """
+    print(f"\n  🚀 MT5 Executor loop spuštěn ({EXECUTOR_LOOP_MINUTES} min interval)")
+
+    while True:
+        now = datetime.now()
+
+        # Zastav v noci (22:00 - 6:00) — trh spí
+        if now.hour >= 22 or now.hour < 6:
+            print(f"  😴 {now.strftime('%H:%M')} — noční pauza (22:00-6:00)")
+            time.sleep(600)  # 10 minut
+            continue
+
+        # Spusť executor
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        try:
+            subprocess.run(
+                [sys.executable, "mt5_executor.py", "--once"],
+                timeout=60,
+                env=env
+            )
+        except subprocess.TimeoutExpired:
+            print(f"  ⚠️  Executor timeout")
+        except Exception as e:
+            print(f"  ⚠️  Executor chyba: {e}")
+
+        time.sleep(EXECUTOR_LOOP_MINUTES * 60)
 
 # ─── SCHEDULER SMYČKA ──────────────────────────────────────────
 
