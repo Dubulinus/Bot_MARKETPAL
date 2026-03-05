@@ -63,7 +63,7 @@ PIPELINE_SCRIPTS = [
     ("rafinerie_polygon.py",   "🔬 Silver — čištění dat"),
     ("feature_engineering.py", "⚙️  Gold  — výpočet featur"),
     ("edge_matrix.py",         "🎯 Edge  — validace signálů"),
-    ("mt5_executor.py --once",  "🚀 MT5   — první kontrola signálů"),
+    ("mt5_executor.py",         "🚀 MT5   — první kontrola signálů"),
 ]
 
 # Log soubor
@@ -107,7 +107,7 @@ def run_script(script_name, description):
         "rafinerie_polygon.py":    60,
         "feature_engineering.py":  60,
         "edge_matrix.py":         120,
-        "mt5_executor.py --once":   30,
+        "mt5_executor.py":          30,
     }
     timeout = TIMEOUTS.get(script_name, 300)
 
@@ -116,8 +116,13 @@ def run_script(script_name, description):
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
 
+        # mt5_executor potřebuje --once argument
+        cmd = [sys.executable, script_name]
+        if script_name == "mt5_executor.py":
+            cmd.append("--once")
+
         result = subprocess.run(
-            [sys.executable, script_name],
+            cmd,
             capture_output=True,
             text=True,
             encoding='utf-8',
