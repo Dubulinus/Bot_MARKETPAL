@@ -75,6 +75,34 @@ MAX_OPEN_TRADES    = 3     # max současně otevřených pozic
 
 # ─── AKTIVNÍ STRATEGIE ─────────────────────────────────────────
 
+# Session filtry — obchoduj jen ve správný čas (UTC)
+# London:  07:00-16:00 UTC
+# NY:      13:00-21:00 UTC
+# Overlap: 13:00-16:00 UTC (nejlepší likvidita)
+# Stocks:  jen během US session 13:30-20:00 UTC
+
+def in_session(session_type):
+    """Zkontroluj jestli jsme ve správné obchodní session."""
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc)
+    h = now_utc.hour
+    m = now_utc.minute
+    hm = h * 60 + m  # minuty od půlnoci UTC
+
+    if session_type == "forex_london":
+        return 7*60 <= hm <= 16*60
+    elif session_type == "forex_ny":
+        return 13*60 <= hm <= 21*60
+    elif session_type == "forex_any":
+        return 7*60 <= hm <= 21*60   # London + NY
+    elif session_type == "stocks_us":
+        return 13*60+30 <= hm <= 20*60  # NYSE open-close
+    elif session_type == "overlap":
+        return 13*60 <= hm <= 16*60  # London/NY overlap
+    return True
+
+
+# WFO optimalizované parametry (walk_forward.py výsledky 2026-03-06)
 ACTIVE_STRATEGIES = [
     {
         "name":      "AMZN RSI OB Exit M5",
@@ -83,8 +111,10 @@ ACTIVE_STRATEGIES = [
         "category":  "stocks",
         "signal":    "signal_rsi_overbought_exit",
         "direction": "short",
-        "pt_atr":    3.0,
-        "sl_atr":    3.0,
+        "pt_atr":    1.5,   # WFO: bylo 3.0
+        "sl_atr":    1.0,   # WFO: bylo 3.0
+        "hold":      6,     # WFO: bylo 12
+        "session":   "stocks_us",  # jen US session
         "active":    True,
     },
     {
@@ -94,8 +124,23 @@ ACTIVE_STRATEGIES = [
         "category":  "stocks",
         "signal":    "signal_bb_breakout_down",
         "direction": "short",
-        "pt_atr":    3.0,
-        "sl_atr":    3.0,
+        "pt_atr":    2.0,   # WFO optimal
+        "sl_atr":    1.0,
+        "hold":      24,    # WFO optimal
+        "session":   "stocks_us",
+        "active":    True,
+    },
+    {
+        "name":      "USDCHF BB Breakdown M15",
+        "ticker":    "USDCHF",
+        "tf":        "M15",
+        "category":  "forex",
+        "signal":    "signal_bb_breakout_down",
+        "direction": "short",
+        "pt_atr":    3.0,   # WFO optimal
+        "sl_atr":    1.0,
+        "hold":      24,    # WFO optimal
+        "session":   "forex_london",  # nejsilnější v London session
         "active":    True,
     },
     {
@@ -107,6 +152,8 @@ ACTIVE_STRATEGIES = [
         "direction": "short",
         "pt_atr":    1.5,
         "sl_atr":    1.5,
+        "hold":      24,
+        "session":   "forex_any",
         "active":    True,
     },
     {
@@ -118,17 +165,8 @@ ACTIVE_STRATEGIES = [
         "direction": "short",
         "pt_atr":    1.5,
         "sl_atr":    1.5,
-        "active":    True,
-    },
-    {
-        "name":      "USDCHF Stoch Pin Bear M5",
-        "ticker":    "USDCHF",
-        "tf":        "M5",
-        "category":  "forex",
-        "signal":    "signal_stoch_pin_bear",
-        "direction": "short",
-        "pt_atr":    2.0,
-        "sl_atr":    1.0,
+        "hold":      24,
+        "session":   "stocks_us",
         "active":    True,
     },
 ]
@@ -365,6 +403,12 @@ def run_once():
         tf         = strat["tf"]
         category   = strat["category"]
         signal_col = strat["signal"]
+
+        # Session filtr — obchoduj jen ve správný čas
+        session = strat.get("session", "forex_any")
+        if not in_session(session):
+            print(f"  {ticker:8} {tf:4} — mimo session ({session}), přeskakuji")
+            continue
 
         # Přeskoč pokud už máme pozici v tomto instrumentu
         if already_in_trade(ticker):
