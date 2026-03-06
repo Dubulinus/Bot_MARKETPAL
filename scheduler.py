@@ -347,8 +347,14 @@ def run_scheduler():
             else:
                 print(f"  ℹ️  {now.strftime('%H:%M')} — pipeline dnes již proběhla, přeskakuji")
 
+        # Páteční týdenní report v 18:00
+        if now.weekday() == 4 and now.hour == 18 and now.minute == 0:
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "utf-8"
+            subprocess.run([sys.executable, "journal.py", "--report"],
+                           timeout=30, env=env)
+
         # Čekej 60 sekund a zkontroluj znovu
-        # (granularita 1 minuta — přesnost ±1 minuta)
         next_check = 60 - now.second
         time.sleep(next_check)
 
