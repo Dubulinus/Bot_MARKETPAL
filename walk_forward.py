@@ -41,7 +41,7 @@ GOLD_DIR   = "data/04_GOLD_FEATURES"
 OUTPUT_DIR = "data/09_WALK_FORWARD"
 
 # Walk-forward parametry
-N_SPLITS      = 5      # počet oken
+N_SPLITS      = 3      # počet oken
 TRAIN_RATIO   = 0.7    # 70% trénink, 30% test v každém okně
 MIN_TRADES    = 10     # minimální počet obchodů pro statistiku
 
@@ -80,11 +80,11 @@ STRATEGIES = [
         "direction": "short",
     },
     {
-        "name":      "USDCHF Stoch Pin Bear M5",
+        "name":      "USDCHF BB Breakout Down M15",
         "ticker":    "USDCHF",
-        "tf":        "M5",
+        "tf":        "M15",
         "category":  "forex",
-        "signal":    "signal_stoch_pin_bear",
+        "signal":    "signal_bb_breakout_down",
         "direction": "short",
     },
 ]
@@ -110,6 +110,8 @@ def backtest_window(df, signal_col, direction, pt_atr, sl_atr, hold,
     atr    = df["atr"].values if "atr" in df.columns else np.full(len(df), np.nan)
     signal = df[signal_col].values.astype(bool)
 
+    if signal_col not in df.columns:
+        return None
     entry_indices = np.where(signal)[0]
     entry_indices = entry_indices[entry_indices + hold + 1 < len(df)]
 
@@ -168,7 +170,8 @@ def backtest_window(df, signal_col, direction, pt_atr, sl_atr, hold,
     win_rate     = wins / len(returns) * 100
     avg_ret      = returns_arr.mean()
     std_ret      = returns_arr.std()
-    sharpe       = avg_ret / std_ret * np.sqrt(252) if std_ret > 0 else 0
+    sharpe       = avg_ret / std_ret * np.sqrt(252) if std_ret > 0.0001 else 0
+    sharpe       = np.clip(sharpe, -10, 10)  # guard against numerical explosion
 
     # Max drawdown
     eq_curve = initial_equity * np.cumprod(1 + returns_arr / 100)
