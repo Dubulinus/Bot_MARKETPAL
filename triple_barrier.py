@@ -1,15 +1,8 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║     MARKETPAL - TRIPLE BARRIER METHOD v2 (FAST)            ║
-║     Vectorized numpy — žádné Python loops                   ║
+║     MARKETPAL - TRIPLE BARRIER METHOD v2.2                 ║
+║     Fix: BARRIER_CONFIGS rozšířen o chybějící kombinace    ║
 ╚══════════════════════════════════════════════════════════════╝
-
-OPRAVY v2.1:
-    BUG #1 FIX: Pro SHORT direction jsou nyní pt/sl bariéry správně
-                 assigned (nebyly prohozené — way to deal: dva separátní
-                 upper/lower pro long vs short).
-    BUG #2 FIX: entry_idx se nyní sbírají uvnitř loop (ne slice na konci),
-                 takže přeskočené NaN entry neposouvají index.
 """
 
 import os
@@ -27,11 +20,27 @@ CATEGORIES = {
     "stocks": ["AAPL", "MSFT", "NVDA", "AMZN"],
 }
 
+# ── FIX: původní kód měl jen 4 konfigurace, chyběly:
+#    pt=1.5/sl=1.0/t=6  → AMZN M5
+#    pt=3.0/sl=1.0/t=24 → USDCHF M15
+# Nyní generujeme všechny rozumné kombinace.
 BARRIER_CONFIGS = [
+    # Krátký horizont (M5 scalping)
+    {"pt": 1.5, "sl": 1.0, "t":  6},   # ← byl chybějící
+    {"pt": 1.5, "sl": 1.5, "t":  6},
+    {"pt": 2.0, "sl": 1.0, "t":  6},
+    {"pt": 2.0, "sl": 1.5, "t":  6},
+    # Střední horizont (M15)
+    {"pt": 1.5, "sl": 1.0, "t": 12},
     {"pt": 1.5, "sl": 1.5, "t": 12},
     {"pt": 2.0, "sl": 1.0, "t": 12},
+    {"pt": 2.0, "sl": 1.5, "t": 12},
+    # Delší horizont (H1)
     {"pt": 1.5, "sl": 1.5, "t": 24},
     {"pt": 2.0, "sl": 1.0, "t": 24},
+    {"pt": 2.0, "sl": 1.5, "t": 24},
+    {"pt": 3.0, "sl": 1.0, "t": 24},   # ← byl chybějící
+    {"pt": 3.0, "sl": 1.5, "t": 24},
 ]
 
 MIN_SIGNALS = 10
@@ -50,39 +59,24 @@ def triple_barrier_vectorized(df, signal_col, direction, pt, sl, t):
     if len(entry_indices) < MIN_SIGNALS:
         return None
 
-    # ── BUG #2 FIX ──────────────────────────────────────────────
-    # Původní kód: sbíral labels do listu a na konci dělal
-    #   "entry_idx": entry_indices[:len(labels)]
-    # To je špatně — když se entry přeskočí (NaN atr),
-    # labels[i] neodpovídá entry_indices[i].
-    # FIX: entry_idx sbíráme přímo v loop spolu s ostatními hodnotami.
-    # ────────────────────────────────────────────────────────────
     labels, exit_idxs, exit_reasons, returns, valid_entries = [], [], [], [], []
 
     for idx in entry_indices:
         atr_val = atr[idx]
         if np.isnan(atr_val) or atr_val <= 0:
-            continue  # přeskočíme — ale NESEBERE nám index
+            continue
 
         entry_price = close[idx]
         if entry_price <= 0:
             continue
 
-        # ── BUG #1 FIX ──────────────────────────────────────────────
-        # Původní kód používal stejné upper/lower pro LONG i SHORT:
-        #   upper = entry_price + pt * atr_val  (TP pro long, SL pro short)
-        #   lower = entry_price - sl * atr_val  (SL pro long, TP pro short)
-        # Pro SHORT to znamenalo: TP používal sl multiplikátor a SL používal
-        # pt multiplikátor — PROHOZENO.
-        #
-        # FIX: separátní výpočet tp_level a sl_level podle direction.
-        # ────────────────────────────────────────────────────────────
+        # Správné bariéry pro LONG i SHORT (fix z v2.1)
         if direction == "long":
-            tp_level = entry_price + pt * atr_val   # cena roste = profit
-            sl_level = entry_price - sl * atr_val   # cena klesá = loss
+            tp_level = entry_price + pt * atr_val
+            sl_level = entry_price - sl * atr_val
         else:  # short
-            tp_level = entry_price - pt * atr_val   # cena klesá = profit
-            sl_level = entry_price + sl * atr_val   # cena roste = loss
+            tp_level = entry_price - pt * atr_val
+            sl_level = entry_price + sl * atr_val
 
         end   = min(idx + t + 1, len(df))
         highs = high[idx+1:end]
@@ -91,7 +85,7 @@ def triple_barrier_vectorized(df, signal_col, direction, pt, sl, t):
         if direction == "long":
             tp_hits = highs >= tp_level
             sl_hits = lows  <= sl_level
-        else:  # short
+        else:
             tp_hits = lows  <= tp_level
             sl_hits = highs >= sl_level
 
@@ -99,37 +93,26 @@ def triple_barrier_vectorized(df, signal_col, direction, pt, sl, t):
         sl_idx = np.argmax(sl_hits) if sl_hits.any() else len(sl_hits)
 
         if not tp_hits.any() and not sl_hits.any():
-            # Vertikální bariéra — čas vypršel
             exit_i = end - 1
             ep     = close[exit_i]
-            if direction == "long":
-                ret = (ep - entry_price) / entry_price * 100
-            else:
-                ret = (entry_price - ep) / entry_price * 100
+            ret    = (ep - entry_price) / entry_price * 100 if direction == "long" \
+                     else (entry_price - ep) / entry_price * 100
             label  = +1 if ret > 0 else (-1 if ret < 0 else 0)
             reason = "time"
-
         elif tp_hits.any() and (not sl_hits.any() or tp_idx <= sl_idx):
-            # Take Profit zasažen první
             exit_i = idx + 1 + tp_idx
-            if direction == "long":
-                ret = (tp_level - entry_price) / entry_price * 100
-            else:
-                ret = (entry_price - tp_level) / entry_price * 100
+            ret    = (tp_level - entry_price) / entry_price * 100 if direction == "long" \
+                     else (entry_price - tp_level) / entry_price * 100
             label  = +1
             reason = "tp"
-
         else:
-            # Stop Loss zasažen první
             exit_i = idx + 1 + sl_idx
-            if direction == "long":
-                ret = (sl_level - entry_price) / entry_price * 100
-            else:
-                ret = (entry_price - sl_level) / entry_price * 100
+            ret    = (sl_level - entry_price) / entry_price * 100 if direction == "long" \
+                     else (entry_price - sl_level) / entry_price * 100
             label  = -1
             reason = "sl"
 
-        valid_entries.append(idx)   # BUG #2 FIX: uložíme idx spolu s labelem
+        valid_entries.append(idx)
         labels.append(label)
         exit_idxs.append(exit_i)
         exit_reasons.append(reason)
@@ -139,7 +122,7 @@ def triple_barrier_vectorized(df, signal_col, direction, pt, sl, t):
         return None
 
     return pd.DataFrame({
-        "entry_idx":   valid_entries,   # BUG #2 FIX: správné indexy
+        "entry_idx":   valid_entries,
         "exit_idx":    exit_idxs,
         "label":       labels,
         "exit_reason": exit_reasons,
@@ -156,11 +139,11 @@ def compute_stats(ldf, signal_col, direction, pt, sl, t, ticker, tf):
     sl_hits  = (ldf["exit_reason"] == "sl").sum()
     win_rate = tp_hits / n * 100
 
-    wins   = ldf[ldf["label"] == +1]["ret_pct"]
+    wins = ldf[ldf["label"] == +1]["ret_pct"]
     losses = ldf[ldf["label"] == -1]["ret_pct"]
-    gp     = wins.sum()
-    gl     = abs(losses.sum())
-    pf     = round(gp / gl, 2) if gl > 0 else 99.0
+    gp   = wins.sum()
+    gl   = abs(losses.sum())
+    pf   = round(gp / gl, 2) if gl > 0 else 99.0
 
     if win_rate >= 55 and pf >= 1.5:
         rating = "STRONG"
@@ -172,6 +155,7 @@ def compute_stats(ldf, signal_col, direction, pt, sl, t, ticker, tf):
     return {
         "ticker": ticker, "timeframe": tf,
         "signal": signal_col.replace("signal_", ""),
+        "signal_col": signal_col,
         "direction": direction,
         "pt": pt, "sl": sl, "t": t,
         "n_signals": n, "tp_hits": int(tp_hits), "sl_hits": int(sl_hits),
@@ -194,10 +178,10 @@ def infer_direction(name):
 
 def main():
     print("╔══════════════════════════════════════════╗")
-    print("║   TRIPLE BARRIER METHOD v2.1 (FIXED)   ║")
+    print("║   TRIPLE BARRIER METHOD v2.2            ║")
     print(f"║   {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}                  ║")
     print("╚══════════════════════════════════════════╝\n")
-    print("  Fixes: short barriers, entry_idx alignment\n")
+    print("  13 barrier configs | všechny kombinace\n")
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     all_stats = []
@@ -218,7 +202,7 @@ def main():
                 for sc in signal_cols:
                     direction = infer_direction(sc)
                     for cfg in BARRIER_CONFIGS:
-                        ldf   = triple_barrier_vectorized(
+                        ldf = triple_barrier_vectorized(
                             df, sc, direction, cfg["pt"], cfg["sl"], cfg["t"]
                         )
                         stats = compute_stats(
@@ -226,11 +210,11 @@ def main():
                             cfg["pt"], cfg["sl"], cfg["t"], ticker, tf
                         )
                         if stats:
-                            # Ulož labely pro meta-labeling
                             if ldf is not None:
                                 out_dir = Path(OUTPUT_DIR) / tf
                                 out_dir.mkdir(parents=True, exist_ok=True)
-                                fname = f"{ticker}_{sc}_pt{cfg['pt']}_sl{cfg['sl']}_t{cfg['t']}.parquet"
+                                fname = (f"{ticker}_{sc}"
+                                         f"_pt{cfg['pt']}_sl{cfg['sl']}_t{cfg['t']}.parquet")
                                 ldf.to_parquet(out_dir / fname, index=False)
                             ticker_stats.append(stats)
 
@@ -242,7 +226,7 @@ def main():
                       f"STRONG:{strong:2} DECENT:{decent:2} | {elapsed:.0f}s")
 
     if not all_stats:
-        print("Zadne vysledky.")
+        print("\n❌ Žádné výsledky — zkontroluj cestu data/04_GOLD_FEATURES/")
         return
 
     df_all  = pd.DataFrame(all_stats)
@@ -254,28 +238,29 @@ def main():
     strong = df_best[df_best["rating"] == "STRONG"]
     decent = df_best[df_best["rating"] == "DECENT"]
 
-    print(f"\n{'='*70}")
-    print("TOP 20 — Triple Barrier (nejlepsi config per signal)")
-    print(f"{'='*70}")
-    print(f"  {'Signal':<26} {'TF':<5} {'Tick':<7} {'Dir':<6} "
-          f"{'WR%':<7} {'PF':<6} {'PT/SL/T'}")
-    print(f"  {'-'*70}")
-
+    print(f"\n{'='*75}")
+    print("STRONG signály — kandidáti pro meta-labeling")
+    print(f"{'='*75}")
+    print(f"  {'Signal':<28} {'TF':<5} {'Tick':<7} {'Dir':<6}"
+          f"{'WR%':<7} {'PF':<6} {'N':<5} {'PT/SL/T'}")
+    print(f"  {'-'*75}")
     for _, r in strong.head(20).iterrows():
         cfg = f"{r['pt']}/{r['sl']}/{r['t']}"
-        print(f"  {r['signal']:<26} {r['timeframe']:<5} {r['ticker']:<7} "
-              f"{r['direction']:<6} {r['win_rate']:<7} {r['profit_factor']:<6} {cfg}")
+        print(f"  {r['signal']:<28} {r['timeframe']:<5} {r['ticker']:<7}"
+              f"{r['direction']:<6} {r['win_rate']:<7} {r['profit_factor']:<6}"
+              f"{r['n_signals']:<5} {cfg}")
 
     elapsed = (datetime.now() - t_start).total_seconds()
     print(f"\n  Celkem kombinaci:  {len(df_all)}")
     print(f"  STRONG:            {len(strong)}")
     print(f"  DECENT:            {len(decent)}")
     print(f"  NO EDGE:           {len(df_best)-len(strong)-len(decent)}")
-    print(f"  Celkovy cas:       {elapsed:.1f}s")
+    print(f"  Čas:               {elapsed:.1f}s")
 
-    df_all.to_csv(os.path.join(OUTPUT_DIR,  "triple_barrier_full.csv"),  index=False)
-    df_best.to_csv(os.path.join(OUTPUT_DIR, "triple_barrier_best.csv"),  index=False)
-    print(f"\n  Vysledky: {OUTPUT_DIR}/triple_barrier_best.csv")
+    df_all.to_csv(os.path.join(OUTPUT_DIR, "triple_barrier_full.csv"),  index=False)
+    df_best.to_csv(os.path.join(OUTPUT_DIR, "triple_barrier_best.csv"), index=False)
+    print(f"\n  ✅ Uloženo: {OUTPUT_DIR}/triple_barrier_best.csv")
+    print(f"  💡 Zkopíruj STRONG signály do meta_labeling.py → STRATEGIES")
 
 
 if __name__ == "__main__":
