@@ -1,36 +1,17 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║         MARKETPAL - META-LABELING                           ║
+║         MARKETPAL - META-LABELING v1.1 (FIXED)             ║
 ║         Marcos Lopez de Prado — AFML Chapter 3              ║
 ╚══════════════════════════════════════════════════════════════╝
 
-CO JE META-LABELING:
+OPRAVY v1.1:
+    BUG #3 FIX: train_meta_model vracela (None, None) při chybě
+                 ale (model, stats, scaler) při úspěchu — 2 vs 3 hodnoty.
+                 Volající kód pak crashoval při unpacku.
+                 FIX: Vždy vracíme trojici (model, stats, scaler).
 
-    Bez meta-labeling:
-        Signal → Trade
-        Win rate: 65%
-
-    S meta-labeling:
-        Signal → Meta Model → Trade (jen když ML říká ANO)
-        Win rate: 75%+ (méně obchodů, vyšší kvalita)
-
-    Meta model NEOPRAVUJE primární signál.
-    Meta model FILTRUJE kdy primárnímu signálu věřit.
-
-    Features pro meta model:
-        - Tržní podmínky (trend, volatilita, volume)
-        - Technické indikátory v době signálu
-        - Session, hodina dne
-        - Vzdálenost od supportů/resistancí
-        - ATR ratio (aktuální vs průměrná volatilita)
-
-VÝSTUP:
-    data/11_META_LABELS/
-        {TICKER}_{TF}_meta_model.pkl    → trénovaný model
-        {TICKER}_{TF}_meta_stats.csv    → výsledky
-
-JAK SPUSTIT:
-    python meta_labeling.py
+    BONUS FIX:   timestamp může být v indexu místo sloupce (Yahoo Finance).
+                 Přidáno automatické rozpoznání.
 """
 
 import os
@@ -59,7 +40,6 @@ GOLD_DIR   = "data/04_GOLD_FEATURES"
 TB_DIR     = "data/07_TRIPLE_BARRIER"
 OUTPUT_DIR = "data/11_META_LABELS"
 
-# Strategie s existujícími Triple Barrier labely
 STRATEGIES = [
     {
         "name":      "AMZN RSI OB Exit M5",
@@ -96,23 +76,37 @@ STRATEGIES = [
     },
 ]
 
-MIN_SAMPLES = 30  # minimum vzorků pro trénink
+MIN_SAMPLES = 30
 
-# ─── FEATURE ENGINEERING PRO META MODEL ────────────────────────
+# ─── HELPERS ───────────────────────────────────────────────────
+
+def get_timestamp_series(df):
+    """
+    BONUS FIX: Yahoo Finance parquet někdy ukládá timestamp do indexu,
+    jindy jako sloupec. Tato funkce to rozpozná automaticky.
+    """
+    if "timestamp" in df.columns:
+        return pd.to_datetime(df["timestamp"], errors="coerce")
+    if isinstance(df.index, pd.DatetimeIndex):
+        return df.index.to_series().reset_index(drop=True)
+    # Zkus najít jakýkoli datetime-like sloupec
+    for col in df.columns:
+        if "time" in col.lower() or "date" in col.lower():
+            try:
+                return pd.to_datetime(df[col], errors="coerce")
+            except Exception:
+                pass
+    return None
+
+# ─── FEATURE ENGINEERING ───────────────────────────────────────
 
 def build_meta_features(df, signal_col):
     """
-    Vytvoří features pro meta model na základě tržních podmínek
-    v době každého signálu.
-
-    Features:
-        Trend:       ema_20 vs ema_50, price vs vwap
-        Volatilita:  atr_ratio (aktuální/průměrná), bb_width
-        Momentum:    rsi, macd
-        Volume:      volume_ratio
-        Čas:         hodina, den týdne
-        Kontext:     vzdálenost od BB, price vs sma
+    Vytvoří features pro meta model v době každého signálu.
     """
+    # BONUS FIX: získáme timestamps robustně
+    timestamps = get_timestamp_series(df)
+
     features = []
     signal_indices = np.where(df[signal_col].values.astype(bool))[0]
 
@@ -168,11 +162,11 @@ def build_meta_features(df, signal_col):
             if not pd.isna(vol) and vol_mean > 0:
                 feat["volume_ratio"] = vol / vol_mean
 
-        # ── Čas ──
-        if "timestamp" in df.columns:
-            ts = pd.to_datetime(row.get("timestamp", None), errors="coerce")
+        # ── Čas (BONUS FIX: robustní timestamp lookup) ──
+        if timestamps is not None:
+            ts = timestamps.iloc[idx] if idx < len(timestamps) else None
             if ts is not None and not pd.isna(ts):
-                feat["hour"]       = ts.hour
+                feat["hour"]        = ts.hour
                 feat["day_of_week"] = ts.dayofweek
 
         # ── Trend síla ──
@@ -198,14 +192,16 @@ def train_meta_model(df_features, labels_df, strategy_name):
     """
     Trénuje Random Forest meta model.
 
-    Input:
-        df_features: features v době každého signálu
-        labels_df:   Triple Barrier labely (+1/-1/0)
+    BUG #3 FIX: Vždy vracíme trojici (model, stats, scaler).
+    Dříve vracela funkce (None, None) při chybě — 2 hodnoty,
+    ale volající kód očekával 3 → UnpackError.
     """
-    if not SKLEARN_OK:
-        return None, None
+    # ── BUG #3 FIX: always return triple ──
+    EMPTY = (None, None, None)
 
-    # Spoj features s labely podle entry_idx
+    if not SKLEARN_OK:
+        return EMPTY
+
     df = df_features.copy()
     df = df.merge(
         labels_df[["entry_idx", "label"]],
@@ -213,17 +209,14 @@ def train_meta_model(df_features, labels_df, strategy_name):
         how="inner"
     )
 
-    # Filtruj label=0 (čas vypršel, nejednoznačné)
     df = df[df["label"] != 0]
 
     if len(df) < MIN_SAMPLES:
         print(f"    Nedostatek vzorků: {len(df)} < {MIN_SAMPLES}")
-        return None, None
+        return EMPTY  # BUG #3 FIX
 
-    # Binární label: 1 = win (TP hit), 0 = loss (SL hit)
     df["target"] = (df["label"] == 1).astype(int)
 
-    # Feature sloupce (bez idx a labelu)
     feature_cols = [c for c in df.columns
                     if c not in ["entry_idx", "label", "target"]
                     and not df[c].isna().all()]
@@ -232,38 +225,32 @@ def train_meta_model(df_features, labels_df, strategy_name):
 
     if len(df_clean) < MIN_SAMPLES:
         print(f"    Nedostatek čistých vzorků: {len(df_clean)}")
-        return None, None
+        return EMPTY  # BUG #3 FIX
 
     X = df_clean[feature_cols].values
     y = df_clean["target"].values
 
     baseline_wr = y.mean() * 100
 
-    # TimeSeriesSplit — správná cross-validace pro časové řady
-    # (žádný data leakage — budoucnost nezná minulost)
     tscv   = TimeSeriesSplit(n_splits=5)
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
-    # Random Forest — robustní, nepotřebuje tuning
     model = RandomForestClassifier(
         n_estimators=100,
-        max_depth=4,          # mělký strom = méně overfittingu
-        min_samples_leaf=5,   # minimálně 5 vzorků v listu
+        max_depth=4,
+        min_samples_leaf=5,
         class_weight="balanced",
         random_state=42,
     )
 
-    # Cross-validace na časových řezech
     cv_scores    = cross_val_score(model, X_scaled, y, cv=tscv, scoring="precision")
     cv_precision = cv_scores.mean() * 100
     cv_std       = cv_scores.std()   * 100
 
-    # Trénuj finální model na celých datech
     model.fit(X_scaled, y)
     train_precision = precision_score(y, model.predict(X_scaled)) * 100
 
-    # Feature importance
     importances = pd.Series(model.feature_importances_, index=feature_cols)
     top_features = importances.nlargest(5)
 
@@ -287,7 +274,7 @@ def train_meta_model(df_features, labels_df, strategy_name):
 
     print(f"    Verdict:         {verdict}")
 
-    return model, {
+    return model, {   # BUG #3 FIX: vždy trojice
         "strategy":        strategy_name,
         "n_samples":       len(df_clean),
         "baseline_wr":     round(baseline_wr, 1),
@@ -314,20 +301,20 @@ def predict_meta(model, scaler, features_row, feature_cols):
         X_s = scaler.transform(X)
 
         proba      = model.predict_proba(X_s)[0]
-        confidence = proba[1]  # pravděpodobnost výhry
+        confidence = proba[1]
 
-        # Obchoduj jen pokud confidence > 60%
         should_trade = confidence >= 0.60
 
         return should_trade, round(confidence, 3)
     except Exception:
-        return True, 1.0  # fallback — obchoduj
+        return True, 1.0
+
 
 # ─── MAIN ──────────────────────────────────────────────────────
 
 def main():
     print("╔══════════════════════════════════════════╗")
-    print("║      MARKETPAL META-LABELING            ║")
+    print("║      MARKETPAL META-LABELING v1.1       ║")
     print(f"║      {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}                  ║")
     print("╚══════════════════════════════════════════╝\n")
 
@@ -347,7 +334,6 @@ def main():
         print(f"  {strat['name']}")
         print(f"  {'─'*50}")
 
-        # Načti Gold data
         gold_path = Path(GOLD_DIR) / tf / strat["category"] / f"{ticker}.parquet"
         if not gold_path.exists():
             print(f"    Gold data nenalezena: {gold_path}")
@@ -359,7 +345,6 @@ def main():
             print(f"    Signal {strat['signal']} nenalezen v datech")
             continue
 
-        # Načti Triple Barrier labely
         tb_path = Path(TB_DIR) / tf / \
             f"{ticker}_{strat['signal']}_pt{pt}_sl{sl}_t{t}.parquet"
 
@@ -370,27 +355,24 @@ def main():
 
         labels_df = pd.read_parquet(tb_path)
 
-        # Build features
         df_features = build_meta_features(df, strat["signal"])
         if df_features.empty:
             print(f"    Žádné features")
             continue
 
-        # Trénuj model
-        result = train_meta_model(df_features, labels_df, strat["name"])
-        if result[0] is None:
+        # BUG #3 FIX: správný unpack trojice
+        model, stats, scaler = train_meta_model(df_features, labels_df, strat["name"])
+
+        if model is None:
             continue
 
-        model, stats, scaler = result
         all_stats.append(stats)
 
-        # Ulož model
         model_path = os.path.join(OUTPUT_DIR, f"{ticker}_{tf}_meta_model.pkl")
         with open(model_path, "wb") as f:
             pickle.dump({"model": model, "scaler": scaler,
                          "feature_cols": stats["feature_cols"]}, f)
 
-    # Souhrn
     if all_stats:
         print(f"\n{'='*55}")
         print("SOUHRN META-LABELING")

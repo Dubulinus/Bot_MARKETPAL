@@ -4,14 +4,12 @@
 ║     Vectorized numpy — žádné Python loops                   ║
 ╚══════════════════════════════════════════════════════════════╝
 
-PROČ BYLO v1 POMALÉ:
-    for každý signal:
-        for každou svíčku:          <- Python loop = pomalé
-    -> 900k+ iterací = 30+ minut
-
-PROČ JE v2 RYCHLÉ:
-    np.argmax(podmínka[entry:entry+t])  <- numpy C loop = rychlé
-    -> stejný výsledek, 50-100x rychleji = ~30 sekund
+OPRAVY v2.1:
+    BUG #1 FIX: Pro SHORT direction jsou nyní pt/sl bariéry správně
+                 assigned (nebyly prohozené — way to deal: dva separátní
+                 upper/lower pro long vs short).
+    BUG #2 FIX: entry_idx se nyní sbírají uvnitř loop (ne slice na konci),
+                 takže přeskočené NaN entry neposouvají index.
 """
 
 import os
@@ -52,54 +50,86 @@ def triple_barrier_vectorized(df, signal_col, direction, pt, sl, t):
     if len(entry_indices) < MIN_SIGNALS:
         return None
 
-    labels, exit_idxs, exit_reasons, returns = [], [], [], []
+    # ── BUG #2 FIX ──────────────────────────────────────────────
+    # Původní kód: sbíral labels do listu a na konci dělal
+    #   "entry_idx": entry_indices[:len(labels)]
+    # To je špatně — když se entry přeskočí (NaN atr),
+    # labels[i] neodpovídá entry_indices[i].
+    # FIX: entry_idx sbíráme přímo v loop spolu s ostatními hodnotami.
+    # ────────────────────────────────────────────────────────────
+    labels, exit_idxs, exit_reasons, returns, valid_entries = [], [], [], [], []
 
     for idx in entry_indices:
         atr_val = atr[idx]
         if np.isnan(atr_val) or atr_val <= 0:
-            continue
+            continue  # přeskočíme — ale NESEBERE nám index
 
         entry_price = close[idx]
         if entry_price <= 0:
             continue
 
-        upper = entry_price + pt * atr_val
-        lower = entry_price - sl * atr_val
+        # ── BUG #1 FIX ──────────────────────────────────────────────
+        # Původní kód používal stejné upper/lower pro LONG i SHORT:
+        #   upper = entry_price + pt * atr_val  (TP pro long, SL pro short)
+        #   lower = entry_price - sl * atr_val  (SL pro long, TP pro short)
+        # Pro SHORT to znamenalo: TP používal sl multiplikátor a SL používal
+        # pt multiplikátor — PROHOZENO.
+        #
+        # FIX: separátní výpočet tp_level a sl_level podle direction.
+        # ────────────────────────────────────────────────────────────
+        if direction == "long":
+            tp_level = entry_price + pt * atr_val   # cena roste = profit
+            sl_level = entry_price - sl * atr_val   # cena klesá = loss
+        else:  # short
+            tp_level = entry_price - pt * atr_val   # cena klesá = profit
+            sl_level = entry_price + sl * atr_val   # cena roste = loss
 
         end   = min(idx + t + 1, len(df))
         highs = high[idx+1:end]
         lows  = low[idx+1:end]
 
         if direction == "long":
-            tp_hits = highs >= upper
-            sl_hits = lows  <= lower
-        else:
-            tp_hits = lows  <= lower
-            sl_hits = highs >= upper
+            tp_hits = highs >= tp_level
+            sl_hits = lows  <= sl_level
+        else:  # short
+            tp_hits = lows  <= tp_level
+            sl_hits = highs >= sl_level
 
         tp_idx = np.argmax(tp_hits) if tp_hits.any() else len(tp_hits)
         sl_idx = np.argmax(sl_hits) if sl_hits.any() else len(sl_hits)
 
         if not tp_hits.any() and not sl_hits.any():
+            # Vertikální bariéra — čas vypršel
             exit_i = end - 1
             ep     = close[exit_i]
-            ret    = (ep - entry_price) / entry_price * 100 if direction == "long" \
-                     else (entry_price - ep) / entry_price * 100
+            if direction == "long":
+                ret = (ep - entry_price) / entry_price * 100
+            else:
+                ret = (entry_price - ep) / entry_price * 100
             label  = +1 if ret > 0 else (-1 if ret < 0 else 0)
             reason = "time"
+
         elif tp_hits.any() and (not sl_hits.any() or tp_idx <= sl_idx):
+            # Take Profit zasažen první
             exit_i = idx + 1 + tp_idx
-            ret    = (upper - entry_price) / entry_price * 100 if direction == "long" \
-                     else (entry_price - lower) / entry_price * 100
+            if direction == "long":
+                ret = (tp_level - entry_price) / entry_price * 100
+            else:
+                ret = (entry_price - tp_level) / entry_price * 100
             label  = +1
             reason = "tp"
+
         else:
+            # Stop Loss zasažen první
             exit_i = idx + 1 + sl_idx
-            ret    = (lower - entry_price) / entry_price * 100 if direction == "long" \
-                     else (entry_price - upper) / entry_price * 100
+            if direction == "long":
+                ret = (sl_level - entry_price) / entry_price * 100
+            else:
+                ret = (entry_price - sl_level) / entry_price * 100
             label  = -1
             reason = "sl"
 
+        valid_entries.append(idx)   # BUG #2 FIX: uložíme idx spolu s labelem
         labels.append(label)
         exit_idxs.append(exit_i)
         exit_reasons.append(reason)
@@ -109,7 +139,7 @@ def triple_barrier_vectorized(df, signal_col, direction, pt, sl, t):
         return None
 
     return pd.DataFrame({
-        "entry_idx":   entry_indices[:len(labels)],
+        "entry_idx":   valid_entries,   # BUG #2 FIX: správné indexy
         "exit_idx":    exit_idxs,
         "label":       labels,
         "exit_reason": exit_reasons,
@@ -164,10 +194,10 @@ def infer_direction(name):
 
 def main():
     print("╔══════════════════════════════════════════╗")
-    print("║   TRIPLE BARRIER METHOD v2 (FAST)       ║")
+    print("║   TRIPLE BARRIER METHOD v2.1 (FIXED)   ║")
     print(f"║   {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}                  ║")
     print("╚══════════════════════════════════════════╝\n")
-    print("  Vectorized numpy — cil < 2 minuty\n")
+    print("  Fixes: short barriers, entry_idx alignment\n")
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     all_stats = []
@@ -196,6 +226,12 @@ def main():
                             cfg["pt"], cfg["sl"], cfg["t"], ticker, tf
                         )
                         if stats:
+                            # Ulož labely pro meta-labeling
+                            if ldf is not None:
+                                out_dir = Path(OUTPUT_DIR) / tf
+                                out_dir.mkdir(parents=True, exist_ok=True)
+                                fname = f"{ticker}_{sc}_pt{cfg['pt']}_sl{cfg['sl']}_t{cfg['t']}.parquet"
+                                ldf.to_parquet(out_dir / fname, index=False)
                             ticker_stats.append(stats)
 
                 all_stats.extend(ticker_stats)
