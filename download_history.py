@@ -32,7 +32,9 @@ except ImportError:
     exit(1)
 
 # ── Výstupní adresář: D:\ má 270 GB volných ───────────────────
-OUTPUT_DIR = r"D:\MARKETPAL_DATA\01_RAW"
+OUTPUT_DIR = r"C:\Bot_MARKETPAL\data\01_RAW"
+
+#zvolil jsem prozatim C: bo to ma byt jen 220MB...
 
 # Cesta k projektu na C: (kam pipeline čte Gold Features)
 # Downloader uloží na D:, pipeline musí vědět kde číst
