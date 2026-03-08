@@ -1,18 +1,19 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║         MARKETPAL - META-LABELING v1.1 (FIXED)             ║
-║         Marcos Lopez de Prado — AFML Chapter 3              ║
+║         MARKETPAL - META-LABELING v1.3                     ║
+║         STRATEGIES = STRONG signály z triple_barrier v3    ║
 ╚══════════════════════════════════════════════════════════════╝
 
-OPRAVY v1.1:
-    BUG #3 FIX: train_meta_model vždy vrací trojici (model, stats, scaler)
-    BONUS FIX:  timestamp rozpoznán z indexu i ze sloupce (Yahoo Finance)
+STRONG signály (triple_barrier.py výsledky 2026-03-07):
+    macd_bull      H1  AAPL    long   WR:61.5% PF:3.43  N:13
+    rsi_oversold   H1  USDJPY  long   WR:80.0% PF:3.31  N:15  ← nejlepší!
+    macd_bear      H1  GBPUSD  short  WR:55.0% PF:2.45  N:20
+    macd_bear      M15 NVDA    short  WR:58.5% PF:2.12  N:53  ← nejvíce vzorků
 
-JAK POUŽÍT:
-    1. python triple_barrier.py      ← vygeneruje labely
-    2. python signal_edge_finder.py  ← najdi STRONG signály
-    3. Zkopíruj STRATEGIES blok sem
-    4. python meta_labeling.py
+POZNÁMKA:
+    H1 signály mají malé N (13-20) → modely budou orientační.
+    NVDA M15 má N=53 → nejspolehlivější model.
+    Po doplnění H1 dat (EURUSD/GBPUSD/USDCHF/AAPL/AMZN) spusť znovu.
 """
 
 import os
@@ -35,56 +36,66 @@ except ImportError:
     SKLEARN_OK = False
     print("⚠️  Spusť: pip install scikit-learn")
 
-# ─── CONFIG ────────────────────────────────────────────────────
 GOLD_DIR   = "data/04_GOLD_FEATURES"
 TB_DIR     = "data/07_TRIPLE_BARRIER"
 OUTPUT_DIR = "data/11_META_LABELS"
 
-# !! Tento blok nahraď výstupem signal_edge_finder.py !!
-# Aktuální strategie jsou příklady — uprav podle svých STRONG signálů.
+MIN_SAMPLES = 10
+
+# ── STRONG signály z triple_barrier.py ────────────────────────
 STRATEGIES = [
     {
-        "name":      "AMZN RSI OB Exit M5",
-        "ticker":    "AMZN",
-        "tf":        "M5",
+        "name":      "NVDA MACD Bear M15",
+        "ticker":    "NVDA",
+        "tf":        "M15",
         "category":  "stocks",
-        "signal":    "signal_rsi_overbought_exit",
+        "signal":    "signal_macd_bear",
+        "direction": "short",
+        "pt":        1.5,
+        "sl":        1.5,
+        "t":         12,
+        # WR: 58.5% | PF: 2.12 | N: 53 ← nejvíce vzorků, nejspolehlivější
+    },
+    {
+        "name":      "USDJPY RSI Oversold H1",
+        "ticker":    "USDJPY",
+        "tf":        "H1",
+        "category":  "forex",
+        "signal":    "signal_rsi_oversold_exit",
+        "direction": "long",
+        "pt":        1.5,
+        "sl":        1.5,
+        "t":         24,
+        # WR: 80.0% | PF: 3.31 | N: 15 ← nejlepší WR, ale malé N
+    },
+    {
+        "name":      "GBPUSD MACD Bear H1",
+        "ticker":    "GBPUSD",
+        "tf":        "H1",
+        "category":  "forex",
+        "signal":    "signal_macd_bear",
         "direction": "short",
         "pt":        1.5,
         "sl":        1.0,
-        "t":         6,
+        "t":         12,
+        # WR: 55.0% | PF: 2.45 | N: 20
     },
     {
-        "name":      "AAPL BB Breakdown M15",
+        "name":      "AAPL MACD Bull H1",
         "ticker":    "AAPL",
-        "tf":        "M15",
+        "tf":        "H1",
         "category":  "stocks",
-        "signal":    "signal_bb_breakout_down",
-        "direction": "short",
-        "pt":        2.0,
-        "sl":        1.0,
-        "t":         24,
-    },
-    {
-        "name":      "USDCHF BB Breakdown M15",
-        "ticker":    "USDCHF",
-        "tf":        "M15",
-        "category":  "forex",
-        "signal":    "signal_bb_breakout_down",
-        "direction": "short",
+        "signal":    "signal_macd_bull",
+        "direction": "long",
         "pt":        3.0,
         "sl":        1.0,
         "t":         24,
+        # WR: 61.5% | PF: 3.43 | N: 13
     },
 ]
 
-MIN_SAMPLES = 30
-
-
-# ─── HELPERS ───────────────────────────────────────────────────
 
 def get_timestamp_series(df):
-    """Rozpozná timestamp ze sloupce nebo z indexu (Yahoo Finance parquet)."""
     if "timestamp" in df.columns:
         return pd.to_datetime(df["timestamp"], errors="coerce")
     if isinstance(df.index, pd.DatetimeIndex):
@@ -98,8 +109,6 @@ def get_timestamp_series(df):
     return None
 
 
-# ─── FEATURE ENGINEERING ───────────────────────────────────────
-
 def build_meta_features(df, signal_col):
     timestamps = get_timestamp_series(df)
     features   = []
@@ -109,7 +118,6 @@ def build_meta_features(df, signal_col):
         row  = df.iloc[idx]
         feat = {}
 
-        # Trend
         if "ema_20" in df.columns and "ema_50" in df.columns:
             ema20 = row.get("ema_20", np.nan)
             ema50 = row.get("ema_50", np.nan)
@@ -125,7 +133,6 @@ def build_meta_features(df, signal_col):
             if not any(pd.isna([vwap, close])) and vwap > 0:
                 feat["price_vs_vwap"] = (close - vwap) / vwap * 100
 
-        # Volatilita
         if "atr" in df.columns:
             atr = row.get("atr", np.nan)
             if not pd.isna(atr) and idx >= 50:
@@ -140,7 +147,6 @@ def build_meta_features(df, signal_col):
                 feat["bb_width"]    = (bbu - bbl) / close * 100
                 feat["bb_position"] = (close - bbl) / (bbu - bbl)
 
-        # Momentum
         if "rsi" in df.columns:
             feat["rsi"] = row.get("rsi", 50)
 
@@ -150,21 +156,18 @@ def build_meta_features(df, signal_col):
             if not any(pd.isna([macd, msig])):
                 feat["macd_hist"] = macd - msig
 
-        # Volume
         if "volume" in df.columns and idx >= 20:
             vol      = row.get("volume", np.nan)
             vol_mean = df["volume"].iloc[max(0, idx-20):idx].mean()
             if not pd.isna(vol) and vol_mean > 0:
                 feat["volume_ratio"] = vol / vol_mean
 
-        # Čas
         if timestamps is not None:
             ts = timestamps.iloc[idx] if idx < len(timestamps) else None
             if ts is not None and not pd.isna(ts):
                 feat["hour"]        = ts.hour
                 feat["day_of_week"] = ts.dayofweek
 
-        # Trend síla
         if idx >= 20:
             closes = df["close"].iloc[max(0, idx-20):idx+1].values
             if len(closes) > 1:
@@ -180,17 +183,13 @@ def build_meta_features(df, signal_col):
     return pd.DataFrame(features)
 
 
-# ─── META MODEL TRÉNINK ────────────────────────────────────────
-
-def train_meta_model(df_features, labels_df, strategy_name):
-    """
-    BUG #3 FIX: Vždy vrací trojici (model, stats, scaler).
-    Dříve vracela (None, None) při chybě → UnpackError.
-    """
+def train_meta_model(df_features, labels_df, strategy_name, n_raw):
     EMPTY = (None, None, None)
-
     if not SKLEARN_OK:
         return EMPTY
+
+    if n_raw < 20:
+        print(f"    ⚠️  Malé N={n_raw} — přidej více H1 dat pro spolehlivý model")
 
     df = df_features.copy()
     df = df.merge(labels_df[["entry_idx", "label"]], on="entry_idx", how="inner")
@@ -201,13 +200,11 @@ def train_meta_model(df_features, labels_df, strategy_name):
         return EMPTY
 
     df["target"] = (df["label"] == 1).astype(int)
-
     feature_cols = [c for c in df.columns
                     if c not in ["entry_idx", "label", "target"]
                     and not df[c].isna().all()]
 
     df_clean = df[feature_cols + ["target"]].dropna()
-
     if len(df_clean) < MIN_SAMPLES:
         print(f"    Nedostatek čistých vzorků: {len(df_clean)}")
         return EMPTY
@@ -216,16 +213,21 @@ def train_meta_model(df_features, labels_df, strategy_name):
     y = df_clean["target"].values
     baseline_wr = y.mean() * 100
 
-    tscv     = TimeSeriesSplit(n_splits=5)
+    n_splits = min(5, len(df_clean) // 4)
+    if n_splits < 2:
+        print(f"    Příliš málo dat pro CV ({len(df_clean)} vzorků)")
+        return EMPTY
+
+    tscv     = TimeSeriesSplit(n_splits=n_splits)
     scaler   = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
     model = RandomForestClassifier(
-        n_estimators=100,
-        max_depth=4,
-        min_samples_leaf=5,
-        class_weight="balanced",
-        random_state=42,
+        n_estimators  = 200,
+        max_depth     = 4,
+        min_samples_leaf = 3,
+        class_weight  = "balanced",
+        random_state  = 42,
     )
 
     cv_scores    = cross_val_score(model, X_scaled, y, cv=tscv, scoring="precision")
@@ -233,27 +235,30 @@ def train_meta_model(df_features, labels_df, strategy_name):
     cv_std       = cv_scores.std()   * 100
 
     model.fit(X_scaled, y)
-    train_precision = precision_score(y, model.predict(X_scaled)) * 100
+    train_precision = precision_score(y, model.predict(X_scaled), zero_division=0) * 100
 
     importances  = pd.Series(model.feature_importances_, index=feature_cols)
     top_features = importances.nlargest(5)
 
-    print(f"    Vzorků:          {len(df_clean)} ({int(y.sum())} wins, {int((1-y).sum())} losses)")
+    improvement = cv_precision - baseline_wr
+
+    print(f"    Vzorků:          {len(df_clean)} ({int(y.sum())} wins / {int((1-y).sum())} losses)")
     print(f"    Baseline WR:     {baseline_wr:.1f}%")
-    print(f"    CV Precision:    {cv_precision:.1f}% ± {cv_std:.1f}%")
+    print(f"    CV Precision:    {cv_precision:.1f}% ± {cv_std:.1f}%  (splits={n_splits})")
     print(f"    Train Precision: {train_precision:.1f}%")
-    print(f"    Zlepšení:        {cv_precision - baseline_wr:+.1f}%")
+    print(f"    Zlepšení:        {improvement:+.1f}%")
     print(f"    Top features:")
     for feat, imp in top_features.items():
         print(f"      {feat:<20} {imp:.3f}")
 
-    improvement = cv_precision - baseline_wr
     if improvement >= 5:
-        verdict = "✅ UŽITEČNÝ — filtruje špatné vstupy"
+        verdict = "✅ UŽITEČNÝ"
     elif improvement >= 2:
-        verdict = "⚠️  MARGINÁLNÍ — malé zlepšení"
+        verdict = "⚠️  MARGINÁLNÍ"
+    elif n_raw < 20:
+        verdict = "⏳ NEDOSTATEK DAT"
     else:
-        verdict = "❌ NEPOMÁHÁ — signál nemá edge, vyřaď ho"
+        verdict = "❌ NEPOMÁHÁ"
 
     print(f"    Verdict:         {verdict}")
 
@@ -271,7 +276,6 @@ def train_meta_model(df_features, labels_df, strategy_name):
 
 
 def predict_meta(model, scaler, features_row, feature_cols):
-    """Predikce pro jeden obchod — volej z executoru."""
     if model is None:
         return True, 1.0
     try:
@@ -286,16 +290,15 @@ def predict_meta(model, scaler, features_row, feature_cols):
         return True, 1.0
 
 
-# ─── MAIN ──────────────────────────────────────────────────────
-
 def main():
     print("╔══════════════════════════════════════════╗")
-    print("║      MARKETPAL META-LABELING v1.1       ║")
+    print("║      MARKETPAL META-LABELING v1.3       ║")
     print(f"║      {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}                  ║")
     print("╚══════════════════════════════════════════╝\n")
+    print("  STRATEGIES: 4 STRONG signály z triple_barrier\n")
 
     if not SKLEARN_OK:
-        print("  Nainstaluj: pip install scikit-learn")
+        print("  pip install scikit-learn")
         return
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -312,65 +315,80 @@ def main():
 
         gold_path = Path(GOLD_DIR) / tf / strat["category"] / f"{ticker}.parquet"
         if not gold_path.exists():
-            print(f"    Gold data nenalezena: {gold_path}")
+            print(f"    ❌ Gold data nenalezena: {gold_path}")
             continue
 
         df = pd.read_parquet(gold_path).reset_index(drop=True)
 
         if strat["signal"] not in df.columns:
-            print(f"    Signál '{strat['signal']}' nenalezen v datech")
-            print(f"    Dostupné signály: {[c for c in df.columns if c.startswith('signal_')]}")
+            avail = [c for c in df.columns if c.startswith("signal_")]
+            print(f"    ❌ Signál '{strat['signal']}' nenalezen.")
+            print(f"       Dostupné: {avail}")
             continue
 
         tb_path = Path(TB_DIR) / tf / \
             f"{ticker}_{strat['signal']}_pt{pt}_sl{sl}_t{t}.parquet"
 
         if not tb_path.exists():
-            print(f"    Triple Barrier labely nenalezeny: {tb_path}")
-            print(f"    Spusť nejdřív: python triple_barrier.py")
+            print(f"    ❌ TB labely nenalezeny: {tb_path}")
+            print(f"       Spusť: python triple_barrier.py")
             continue
 
         labels_df   = pd.read_parquet(tb_path)
+        n_raw       = len(labels_df)
         df_features = build_meta_features(df, strat["signal"])
 
         if df_features.empty:
             print(f"    Žádné features")
             continue
 
-        # BUG #3 FIX: správný unpack trojice vždy
-        model, stats, scaler = train_meta_model(df_features, labels_df, strat["name"])
+        model, stats, scaler = train_meta_model(
+            df_features, labels_df, strat["name"], n_raw
+        )
 
         if model is None:
             continue
 
         all_stats.append(stats)
-
         model_path = os.path.join(OUTPUT_DIR, f"{ticker}_{tf}_meta_model.pkl")
         with open(model_path, "wb") as f:
             pickle.dump({
                 "model":        model,
                 "scaler":       scaler,
-                "feature_cols": stats["feature_cols"]
+                "feature_cols": stats["feature_cols"],
             }, f)
+        print(f"    💾 Model uložen: {model_path}")
 
     if all_stats:
-        print(f"\n{'='*55}")
+        print(f"\n{'='*60}")
         print("SOUHRN META-LABELING")
-        print(f"{'='*55}")
-        print(f"  {'Strategie':<30} {'Baseline':>9} {'CV Prec':>9} {'Zlepšení':>9}")
-        print(f"  {'─'*55}")
+        print(f"{'='*60}")
+        print(f"  {'Strategie':<28} {'Baseline':>9} {'CV Prec':>9} {'Zlepšení':>9}")
+        print(f"  {'─'*60}")
         for s in sorted(all_stats, key=lambda x: x["improvement"], reverse=True):
-            print(f"  {s['strategy']:<30} {s['baseline_wr']:>8.1f}% "
-                  f"{s['cv_precision']:>8.1f}% {s['improvement']:>+8.1f}%")
+            print(f"  {s['strategy']:<28} {s['baseline_wr']:>8.1f}% "
+                  f"{s['cv_precision']:>8.1f}% {s['improvement']:>+8.1f}%  {s['verdict']}")
 
         pd.DataFrame(all_stats).to_csv(
             os.path.join(OUTPUT_DIR, "meta_stats.csv"), index=False
         )
+
+        useful = [s for s in all_stats if "UŽITEČNÝ" in s["verdict"]]
         print(f"\n  ✅ Modely uloženy: {OUTPUT_DIR}/")
-        print(f"  💡 Další krok: integruj do executoru přes predict_meta()")
+
+        if useful:
+            print(f"\n  🎯 POUŽITELNÉ modely ({len(useful)}):")
+            for s in useful:
+                print(f"     • {s['strategy']}")
+                print(f"       CV {s['cv_precision']:.1f}% vs baseline {s['baseline_wr']:.1f}%"
+                      f" → filtruje {s['improvement']:.1f}% špatných vstupů")
+            print(f"\n  💡 Další krok: python mt5_executor.py (integruj predict_meta)")
+        else:
+            print(f"\n  ⚠️  Žádný model není zatím UŽITEČNÝ.")
+            print(f"     Nejlepší kandidát: NVDA MACD Bear M15 (N=53, nejvíce dat)")
+            print(f"     Po doplnění H1 dat spusť znovu.")
     else:
-        print("\n  ⚠️  Žádné modely nebyly natrénovány.")
-        print("  → Spusť signal_edge_finder.py a použij STRONG signály v STRATEGIES")
+        print("\n  ❌ Žádné modely. Zkontroluj triple_barrier.py výsledky.")
 
 
 if __name__ == "__main__":
