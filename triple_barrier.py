@@ -283,10 +283,14 @@ def main():
         return
 
     df_all  = pd.DataFrame(all_stats)
+    RATING_ORDER = {"STRONG": 0, "DECENT": 1, "NO EDGE": 2}
+    df_all["rating_order"] = df_all["rating"].map(RATING_ORDER)
     df_best = (df_all
-               .sort_values("profit_factor", ascending=False)
-               .drop_duplicates(subset=["ticker", "timeframe", "signal"])
-               .reset_index(drop=True))
+               .sort_values(["rating_order", "profit_factor"],
+                            ascending=[True, False])
+            .drop_duplicates(subset=["ticker", "timeframe", "signal"])
+            .drop(columns=["rating_order"])
+            .reset_index(drop=True))
 
     strong = df_best[df_best["rating"] == "STRONG"]
     decent = df_best[df_best["rating"] == "DECENT"]
