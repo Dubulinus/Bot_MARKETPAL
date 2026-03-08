@@ -45,55 +45,24 @@ MIN_SAMPLES = 10
 # ── STRONG signály z triple_barrier.py ────────────────────────
 STRATEGIES = [
     {
-        "name":      "NVDA MACD Bear M15",
-        "ticker":    "NVDA",
-        "tf":        "M15",
-        "category":  "stocks",
-        "signal":    "signal_macd_bear",
-        "direction": "short",
-        "pt":        1.5,
-        "sl":        1.5,
-        "t":         12,
-        # WR: 58.5% | PF: 2.12 | N: 53 ← nejvíce vzorků, nejspolehlivější
+        "name": "EURUSD RSI Oversold Exit M15",
+        "ticker": "EURUSD", "tf": "M15", "category": "forex",
+        "signal": "signal_rsi_oversold_exit", "direction": "long",
+        "pt": 2.0, "sl": 1.5, "t": 24,
     },
     {
-        "name":      "USDJPY RSI Oversold H1",
-        "ticker":    "USDJPY",
-        "tf":        "H1",
-        "category":  "forex",
-        "signal":    "signal_rsi_oversold_exit",
-        "direction": "long",
-        "pt":        1.5,
-        "sl":        1.5,
-        "t":         24,
-        # WR: 80.0% | PF: 3.31 | N: 15 ← nejlepší WR, ale malé N
+        "name": "GBPUSD RSI Oversold Exit M15",
+        "ticker": "GBPUSD", "tf": "M15", "category": "forex",
+        "signal": "signal_rsi_oversold_exit", "direction": "long",
+        "pt": 1.5, "sl": 1.5, "t": 24,
     },
     {
-        "name":      "GBPUSD MACD Bear H1",
-        "ticker":    "GBPUSD",
-        "tf":        "H1",
-        "category":  "forex",
-        "signal":    "signal_macd_bear",
-        "direction": "short",
-        "pt":        1.5,
-        "sl":        1.0,
-        "t":         12,
-        # WR: 55.0% | PF: 2.45 | N: 20
-    },
-    {
-        "name":      "AAPL MACD Bull H1",
-        "ticker":    "AAPL",
-        "tf":        "H1",
-        "category":  "stocks",
-        "signal":    "signal_macd_bull",
-        "direction": "long",
-        "pt":        3.0,
-        "sl":        1.0,
-        "t":         24,
-        # WR: 61.5% | PF: 3.43 | N: 13
+        "name": "GOOGL RSI Oversold Exit M15",
+        "ticker": "GOOGL", "tf": "M15", "category": "stocks",
+        "signal": "signal_rsi_oversold_exit", "direction": "long",
+        "pt": 1.5, "sl": 1.5, "t": 24,
     },
 ]
-
 
 def get_timestamp_series(df):
     if "timestamp" in df.columns:
