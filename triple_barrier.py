@@ -30,9 +30,10 @@ INPUT_DIR  = "data/04_GOLD_FEATURES"
 OUTPUT_DIR = "data/07_TRIPLE_BARRIER"
 
 TIMEFRAMES = ["M5", "M15", "H1"]
+# OPRAVA:
 CATEGORIES = {
     "forex":  ["EURUSD", "GBPUSD", "USDJPY", "USDCHF"],
-    "stocks": ["AAPL", "MSFT", "NVDA", "AMZN"],
+    "stocks": ["AAPL", "MSFT", "NVDA", "AMZN", "TSLA", "META", "GOOGL", "AMD"],
 }
 
 BARRIER_CONFIGS = [
