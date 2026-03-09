@@ -48,7 +48,81 @@ OUTPUT_DIR = "data/04_GOLD_FEATURES"   # přepisujeme na místě (přidáváme s
 
 TIMEFRAMES  = ["M5", "M15", "H1"]
 CATEGORIES  = {"forex": ["EURUSD", "GBPUSD", "USDJPY", "USDCHF"],
-               "stocks": ["AAPL", "MSFT", "NVDA", "AMZN"]}
+               "stocks": ["AAPL", "MSFT", "NVDA", "AMZN", "TSLA", "META", "GOOGL", "AMD"]}
+
+ALT_DIR = "data/12_ALTERNATIVE"
+
+def load_alternative_data():
+    """Načte FRED makro + COT forex data pro merge do každého tickeru."""
+    alt = {}
+
+    # FRED makro
+    fred_path = Path(ALT_DIR) / "fred_macro.parquet"
+    if fred_path.exists():
+        df_fred = pd.read_parquet(fred_path)
+        df_fred.index = pd.to_datetime(df_fred.index).normalize()  # jen datum, bez času
+        alt["fred"] = df_fred
+        print(f"  📊 FRED načten: {len(df_fred.columns)} features")
+    else:
+        print(f"  ⚠️  FRED nenalezen: {fred_path}")
+
+    # COT forex
+    cot_path = Path(ALT_DIR) / "cot_forex.parquet"
+    if cot_path.exists():
+        df_cot = pd.read_parquet(cot_path)
+        df_cot.index = pd.to_datetime(df_cot.index).normalize()
+        alt["cot"] = df_cot
+        print(f"  📊 COT načten: {len(df_cot.columns)} features")
+    else:
+        print(f"  ⚠️  COT nenalezen: {cot_path}")
+
+    return alt
+
+
+def merge_alternative_data(df, alt, ticker, category):
+    """
+    Mergne FRED + COT do tickerového DataFrame.
+
+    Logika:
+    - df má datetime index (intraday svíčky)
+    - FRED/COT má denní index
+    - Merge přes normalize() → left join → forward fill
+    """
+    if not alt:
+        return df
+
+    # Vytvoř denní klíč ze svíčkového indexu
+    df_dates = pd.to_datetime(df.index).normalize()
+
+    # FRED — pro všechny tickery
+    if "fred" in alt:
+        df_fred = alt["fred"].reindex(df_dates).values
+        fred_cols = alt["fred"].columns.tolist()
+        for i, col in enumerate(fred_cols):
+            df[f"fred_{col}"] = df_fred[:, i]
+
+    # COT — jen pro forex
+    if "cot" in alt and category == "forex":
+        df_cot = alt["cot"].reindex(df_dates).values
+        cot_cols = alt["cot"].columns.tolist()
+        for i, col in enumerate(cot_cols):
+            df[f"cot_{col}"] = df_cot[:, i]
+
+        # Přidej COT signály jako boolean signal_ sloupce
+        # (triple_barrier je bude testovat automaticky)
+        for pair in ["EURUSD", "GBPUSD", "USDJPY", "USDCHF"]:
+            long_col  = f"cot_{pair}_cot_long"
+            short_col = f"cot_{pair}_cot_short"
+            if long_col in df.columns:
+                df[f"signal_cot_{pair}_long"]  = df[long_col].fillna(0).astype(bool)
+                df[f"signal_cot_{pair}_short"] = df[short_col].fillna(0).astype(bool)
+
+    # Forward fill pro NaN (víkend gaps atd.)
+    alt_cols = [c for c in df.columns if c.startswith("fred_") or c.startswith("cot_")]
+    if alt_cols:
+        df[alt_cols] = df[alt_cols].ffill()
+
+    return df
 
 # Parametry indikátorů
 STOCH_K     = 14    # Stochastic %K perioda
@@ -406,12 +480,17 @@ def count_new_signals(df):
     return [c for c in df.columns if c.startswith("signal_")]
 
 
-def process_file(path):
-    """Načte Gold parquet, přidá nové featury, uloží zpět."""
+def process_file(path, alt, category):
+    """Načte Gold parquet, přidá nové featury + alternative data, uloží zpět."""
     df = pd.read_parquet(path)
     original_cols = len(df.columns)
 
+    # Technické indikátory (existující)
     df = add_all_new_features(df)
+
+    # Alternative data merge (nové)
+    ticker = path.stem  # název souboru bez .parquet
+    df = merge_alternative_data(df, alt, ticker, category)
 
     new_cols    = len(df.columns) - original_cols
     new_signals = count_new_signals(df)
@@ -420,13 +499,16 @@ def process_file(path):
     return new_cols, len(new_signals)
 
 
+
 def main():
     print("╔══════════════════════════════════════════╗")
     print("║   MARKETPAL FEATURE ENGINEERING v2      ║")
     print(f"║   {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}                  ║")
     print("╚══════════════════════════════════════════╝\n")
     print("  Přidávám: Volume, Momentum, Volatility, Patterns\n")
-
+    print("  Načítám alternative data (FRED + COT)...")
+    alt = load_alternative_data()
+    print()
     total_files   = 0
     total_ok      = 0
     all_new_cols  = 0
@@ -443,7 +525,7 @@ def main():
 
                 total_files += 1
                 try:
-                    new_cols, n_signals = process_file(path)
+                    new_cols, n_signals = process_file(path, alt, category)
                     all_new_cols += new_cols
                     signal_count  = n_signals  # stejné pro všechny
                     total_ok     += 1
