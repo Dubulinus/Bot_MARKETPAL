@@ -226,6 +226,9 @@ def main():
     t_start   = datetime.now()
 
     for tf in TIMEFRAMES:
+        if tf == "M5":
+            print(f"\n=== {tf} === (přeskočeno — šum)")
+            continue
         print(f"\n=== {tf} ===")
         for category, tickers in CATEGORIES.items():
             for ticker in tickers:
@@ -261,7 +264,7 @@ def main():
                             cfg["pt"], cfg["sl"], cfg["t"], ticker, tf
                         )
                         if stats:
-                            if ldf is not None:
+                            if ldf is not None and stats["rating"] in ("STRONG", "DECENT"):
                                 out_dir = Path(OUTPUT_DIR) / tf
                                 out_dir.mkdir(parents=True, exist_ok=True)
                                 fname = (f"{ticker}_{sc}"
