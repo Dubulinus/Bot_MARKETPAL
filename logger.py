@@ -120,7 +120,7 @@ def get_logger(name: str, level: str = None) -> logging.Logger:
     fh = RotatingFileHandler(
         log_file,
         maxBytes=10 * 1024 * 1024,  # 10 MB
-        backupCount=5,
+        backupCount=10,
         encoding="utf-8",
     )
     fh.setLevel(logging.DEBUG)      # do souboru vše, i DEBUG
