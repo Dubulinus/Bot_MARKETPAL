@@ -1,0 +1,7 @@
+[
+  {
+    "install": "pyenv local 3.10.17 && grep -v '^metatrader5\\|^pywin32\\|^pywinpty' requirements.txt > requirements_linux.txt && pip install -r requirements_linux.txt",
+    "start": "python live_signal_generator.py",
+    "resourceSize": "medium"
+  }
+]
