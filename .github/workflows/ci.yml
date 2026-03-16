@@ -1,0 +1,44 @@
+# .github/workflows/ci.yml
+# Spustí se automaticky po každém git push
+# Kontroluje: syntax, import errors, základní testy
+
+name: MARKETPAL CI
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install ruff black pandas numpy scikit-learn
+
+      - name: Ruff lint
+        run: ruff check . --ignore=E501,F401
+
+      - name: Black format check
+        run: black --check . --line-length=100
+
+      - name: Import check (žádné rozbité importy)
+        run: |
+          python -c "import feature_engineering"
+          python -c "import meta_labeling"
+          python -c "import logger"
+
+      - name: MT5 executor test (simulation)
+        run: python mt5_executor.py test
+
+      - name: Telegram bot test (mock)
+        run: python telegram_bot.py test

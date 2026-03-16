@@ -1,527 +1,659 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║         MARKETPAL - DASHBOARD v1                            ║
-║         Streamlit vizualizace — equity, signály, trades     ║
+║     MARKETPAL - DASHBOARD v1.0                             ║
+║     Streamlit live monitoring dashboard                    ║
 ╚══════════════════════════════════════════════════════════════╝
 
-JAK SPUSTIT:
+INSTALACE:
+    pip install streamlit plotly pandas numpy
+
+SPUŠTĚNÍ:
     streamlit run dashboard.py
 
-Otevře se prohlížeč na http://localhost:8501
-Auto-refresh každých 30 sekund.
+AUTOMATICKÝ REFRESH:
+    streamlit run dashboard.py --server.runOnSave true
+    (nebo v dashboardu klikni ↻ každých 30s)
+
+CO ZOBRAZUJE:
+    - Equity curve + drawdown
+    - FTMO progress bary
+    - Otevřené pozice (live z trade_log.json)
+    - Win rate, P&L, Sharpe ratio
+    - Posledních N signálů ze signal_log.json
+    - System bus eventy (co se děje v systému)
+    - Per-strategie statistiky
+    - Regime distribution (BULL/BEAR/SIDEWAYS)
 """
 
 import json
-import os
-from datetime import datetime, timedelta
-from pathlib import Path
-
+import time
+import random
 import pandas as pd
 import numpy as np
+from pathlib import Path
+from datetime import datetime, timedelta
+
 import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 
-# ─── CONFIG ────────────────────────────────────────────────────
-
-ST_TITLE      = "🤖 MarketPal Dashboard"
-REFRESH_SEC   = 30
-
-TRADES_LOG    = "data/08_PAPER_TRADES/mt5_trades.json"
-SCHEDULER_LOG = "data/scheduler_log.json"
-FTMO_STATE    = "data/ftmo_state.json"
-EDGE_MATRIX   = "data/05_EDGE_MATRIX/edge_matrix_top.csv"
-TB_BEST       = "data/07_TRIPLE_BARRIER/triple_barrier_best.csv"
-GOLD_DIR      = "data/04_GOLD_FEATURES"
-
-ACCOUNT_SIZE       = 10000
-MAX_DAILY_LOSS_PCT = 4.5
-MAX_TOTAL_LOSS_PCT = 9.0
-
 # ─── PAGE CONFIG ───────────────────────────────────────────────
-
 st.set_page_config(
-    page_title="MarketPal",
-    page_icon="🤖",
-    layout="wide",
-    initial_sidebar_state="collapsed",
+    page_title  = "MARKETPAL AOS",
+    page_icon   = "📈",
+    layout      = "wide",
+    initial_sidebar_state = "collapsed",
 )
 
-# Dark theme CSS
+# ─── DARK THEME CSS ────────────────────────────────────────────
 st.markdown("""
 <style>
-    .main { background-color: #0e1117; }
-    .metric-card {
-        background: #1e2130;
-        border-radius: 10px;
-        padding: 20px;
-        border-left: 4px solid #00d4aa;
-    }
-    .alert-red   { border-left-color: #ff4b4b !important; }
-    .alert-green { border-left-color: #00d4aa !important; }
-    .alert-yellow{ border-left-color: #ffd700 !important; }
-    h1 { color: #00d4aa; }
-    .stMetric label { color: #888; font-size: 12px; }
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Syne:wght@400;600;700;800&display=swap');
+
+/* Celková barva pozadí */
+.stApp {
+    background-color: #0a0e1a;
+    color: #e2e8f0;
+    font-family: 'Syne', sans-serif;
+}
+
+/* Metriky */
+[data-testid="metric-container"] {
+    background: linear-gradient(135deg, #111827 0%, #1a2235 100%);
+    border: 1px solid #1e3a5f;
+    border-radius: 12px;
+    padding: 16px 20px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+}
+
+[data-testid="metric-container"] label {
+    color: #64748b !important;
+    font-family: 'JetBrains Mono', monospace !important;
+    font-size: 0.7rem !important;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+[data-testid="metric-container"] [data-testid="metric-value"] {
+    font-family: 'JetBrains Mono', monospace !important;
+    font-size: 1.6rem !important;
+    font-weight: 700;
+    color: #e2e8f0 !important;
+}
+
+[data-testid="metric-container"] [data-testid="metric-delta"] {
+    font-family: 'JetBrains Mono', monospace !important;
+    font-size: 0.8rem !important;
+}
+
+/* Dataframe */
+[data-testid="stDataFrame"] {
+    background: #111827;
+    border-radius: 8px;
+}
+
+/* Headers */
+h1, h2, h3 {
+    font-family: 'Syne', sans-serif !important;
+    font-weight: 800 !important;
+    letter-spacing: -0.02em;
+}
+
+/* Separátor */
+hr {
+    border-color: #1e3a5f;
+    margin: 8px 0;
+}
+
+/* Status badge */
+.status-live {
+    display: inline-block;
+    background: #052e16;
+    color: #4ade80;
+    border: 1px solid #166534;
+    border-radius: 20px;
+    padding: 3px 12px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+}
+.status-paused {
+    background: #431407;
+    color: #fb923c;
+    border-color: #9a3412;
+}
+
+/* Progress bar label */
+.progress-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    color: #94a3b8;
+    margin-bottom: 2px;
+}
+
+/* Event log */
+.event-item {
+    background: #111827;
+    border-left: 3px solid #1e3a5f;
+    padding: 6px 12px;
+    margin: 4px 0;
+    border-radius: 0 6px 6px 0;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.72rem;
+    color: #94a3b8;
+}
+.event-signal { border-left-color: #4ade80; }
+.event-order  { border-left-color: #60a5fa; }
+.event-error  { border-left-color: #f87171; }
+.event-risk   { border-left-color: #fbbf24; }
+
+/* Sekce nadpis */
+.section-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.65rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: #475569;
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid #1e293b;
+}
 </style>
 """, unsafe_allow_html=True)
 
-# ─── DATA LOADERS ──────────────────────────────────────────────
 
-@st.cache_data(ttl=REFRESH_SEC)
-def load_trades():
-    if not os.path.exists(TRADES_LOG):
-        return []
-    try:
-        with open(TRADES_LOG, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return []
+# ═══════════════════════════════════════════════════════════════
+# DATA LOADING (s fallbackem na mock data)
+# ═══════════════════════════════════════════════════════════════
+
+@st.cache_data(ttl=15)  # refresh každých 15 sekund
+def load_state() -> dict:
+    path = Path("data/bot_state.json")
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    # Mock data pro testování bez spuštěného bota
+    return {
+        "equity":            10_347.50,
+        "daily_pnl":         127.50,
+        "total_pnl":         347.50,
+        "win_count":         14,
+        "loss_count":        8,
+        "daily_trade_count": 3,
+        "paused":            False,
+        "open_trades":       [
+            {"ticker": "EURUSD", "direction": "long",  "entry": 1.08420, "sl": 1.08270, "tp": 1.08720},
+            {"ticker": "GBPUSD", "direction": "long",  "entry": 1.26340, "sl": 1.26190, "tp": 1.26640},
+        ],
+    }
+
+@st.cache_data(ttl=15)
+def load_trades() -> list:
+    path = Path("data/trade_log.json")
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    # Mock closed trades
+    rng    = np.random.default_rng(42)
+    trades = []
+    equity = 10_000.0
+    date   = datetime.utcnow() - timedelta(days=30)
+    for i in range(22):
+        pnl    = float(rng.choice([-78, -65, 95, 127, 142, -52, 108, 183, -90, 76]))
+        equity += pnl
+        trades.append({
+            "ticket":     100000 + i,
+            "ticker":     rng.choice(["EURUSD", "GBPUSD", "USDCHF"]),
+            "direction":  rng.choice(["long", "short"]),
+            "entry":      1.08 + rng.random() * 0.01,
+            "pnl":        pnl,
+            "equity_after": equity,
+            "timestamp":  str(date + timedelta(days=i * 1.3)),
+            "status":     "CLOSED",
+            "signal_name": rng.choice([
+                "EURUSD M15 RSI oversold exit",
+                "GBPUSD M15 RSI oversold exit",
+                "USDCHF H1 Stoch pin bear",
+            ]),
+        })
+    return trades
+
+@st.cache_data(ttl=15)
+def load_signals() -> list:
+    path = Path("data/signal_log.json")
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return []
+
+@st.cache_data(ttl=15)
+def load_bus_events() -> list:
+    path = Path("data/system_bus.json")
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data.get("events", [])[-20:]
+        except Exception:
+            pass
+    return []
 
 
-@st.cache_data(ttl=REFRESH_SEC)
-def load_ftmo_state():
-    if not os.path.exists(FTMO_STATE):
-        return {"equity": ACCOUNT_SIZE, "daily_pnl": 0.0, "total_pnl": 0.0}
-    try:
-        with open(FTMO_STATE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {"equity": ACCOUNT_SIZE, "daily_pnl": 0.0, "total_pnl": 0.0}
+# ═══════════════════════════════════════════════════════════════
+# HEADER
+# ═══════════════════════════════════════════════════════════════
 
+def render_header(state: dict):
+    col1, col2, col3 = st.columns([3, 1, 1])
 
-@st.cache_data(ttl=REFRESH_SEC)
-def load_scheduler_log():
-    if not os.path.exists(SCHEDULER_LOG):
-        return []
-    try:
-        with open(SCHEDULER_LOG, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return []
-
-
-@st.cache_data(ttl=60)
-def load_edge_matrix():
-    if not os.path.exists(EDGE_MATRIX):
-        return pd.DataFrame()
-    try:
-        return pd.read_csv(EDGE_MATRIX)
-    except Exception:
-        return pd.DataFrame()
-
-
-@st.cache_data(ttl=60)
-def load_triple_barrier():
-    if not os.path.exists(TB_BEST):
-        return pd.DataFrame()
-    try:
-        return pd.read_csv(TB_BEST)
-    except Exception:
-        return pd.DataFrame()
-
-
-@st.cache_data(ttl=REFRESH_SEC)
-def load_gold_data(ticker, tf, category):
-    path = Path(GOLD_DIR) / tf / category / f"{ticker}.parquet"
-    if not path.exists():
-        return None
-    try:
-        return pd.read_parquet(path)
-    except Exception:
-        return None
-
-# ─── HEADER ────────────────────────────────────────────────────
-
-st.title(ST_TITLE)
-st.caption(f"Auto-refresh každých {REFRESH_SEC}s | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
-# Auto refresh
-st_autorefresh = st.empty()
-st.markdown(
-    f'<meta http-equiv="refresh" content="{REFRESH_SEC}">',
-    unsafe_allow_html=True
-)
-
-# ─── ROW 1: KLÍČOVÉ METRIKY ────────────────────────────────────
-
-trades    = load_trades()
-ftmo      = load_ftmo_state()
-sched_log = load_scheduler_log()
-
-equity      = ftmo.get("equity", ACCOUNT_SIZE)
-daily_pnl   = ftmo.get("daily_pnl", 0.0)
-total_pnl   = ftmo.get("total_pnl", 0.0)
-
-closed_trades = [t for t in trades if t.get("status") == "closed"]
-open_trades   = [t for t in trades if t.get("status") == "open"]
-wins          = sum(1 for t in closed_trades if t.get("exit_reason") == "tp")
-losses        = sum(1 for t in closed_trades if t.get("exit_reason") == "sl")
-win_rate      = wins / len(closed_trades) * 100 if closed_trades else 0
-
-daily_limit   = ACCOUNT_SIZE * MAX_DAILY_LOSS_PCT / 100
-total_limit   = ACCOUNT_SIZE * MAX_TOTAL_LOSS_PCT / 100
-daily_used    = abs(min(daily_pnl, 0)) / daily_limit * 100 if daily_pnl < 0 else 0
-total_used    = abs(min(total_pnl, 0)) / total_limit * 100 if total_pnl < 0 else 0
-
-col1, col2, col3, col4, col5, col6 = st.columns(6)
-
-with col1:
-    delta_color = "normal" if equity >= ACCOUNT_SIZE else "inverse"
-    st.metric("💰 Equity", f"${equity:,.2f}",
-              f"{total_pnl:+.2f}",
-              delta_color=delta_color)
-
-with col2:
-    st.metric("📅 Daily P&L", f"${daily_pnl:+.2f}",
-              f"{daily_used:.0f}% limitu použito")
-
-with col3:
-    st.metric("📊 Win Rate", f"{win_rate:.1f}%",
-              f"{wins}W / {losses}L")
-
-with col4:
-    st.metric("📈 Trades celkem", len(closed_trades),
-              f"{len(open_trades)} otevřených")
-
-with col5:
-    # Pipeline status
-    last_run = sched_log[-1] if sched_log else None
-    if last_run:
-        status = "✅ OK" if last_run["success"] else "❌ CHYBA"
-        ts     = last_run["timestamp"][:16].replace("T", " ")
-        st.metric("🔄 Pipeline", status, ts)
-    else:
-        st.metric("🔄 Pipeline", "⚠️ Žádný log", "")
-
-with col6:
-    # FTMO status
-    if daily_used >= 80:
-        ftmo_status = "⚠️ VAROVÁNÍ"
-    elif daily_used >= 50:
-        ftmo_status = "🟡 POZOR"
-    else:
-        ftmo_status = "✅ V POŘÁDKU"
-    st.metric("🛡️ FTMO Status", ftmo_status,
-              f"Daily: {daily_used:.0f}% | Total: {total_used:.0f}%")
-
-st.divider()
-
-# ─── ROW 2: FTMO GAUGES + EQUITY CURVE ────────────────────────
-
-col_left, col_right = st.columns([1, 2])
-
-with col_left:
-    st.subheader("🛡️ FTMO Limity")
-
-    # Daily loss gauge
-    fig_daily = go.Figure(go.Indicator(
-        mode="gauge+number+delta",
-        value=abs(min(daily_pnl, 0)),
-        delta={"reference": 0, "valueformat": ".2f"},
-        title={"text": "Daily Loss", "font": {"color": "white"}},
-        number={"prefix": "$", "font": {"color": "white"}},
-        gauge={
-            "axis": {"range": [0, daily_limit], "tickcolor": "white"},
-            "bar":  {"color": "#ff4b4b" if daily_used > 70 else "#00d4aa"},
-            "steps": [
-                {"range": [0, daily_limit * 0.5],  "color": "#1e2130"},
-                {"range": [daily_limit * 0.5, daily_limit * 0.8], "color": "#2d3548"},
-                {"range": [daily_limit * 0.8, daily_limit],       "color": "#3d1e1e"},
-            ],
-            "threshold": {
-                "line": {"color": "red", "width": 4},
-                "thickness": 0.75,
-                "value": daily_limit
-            }
-        }
-    ))
-    fig_daily.update_layout(
-        height=200, margin=dict(l=20, r=20, t=30, b=20),
-        paper_bgcolor="#0e1117", font_color="white"
-    )
-    st.plotly_chart(fig_daily, use_container_width=True)
-
-    # Total loss gauge
-    fig_total = go.Figure(go.Indicator(
-        mode="gauge+number",
-        value=abs(min(total_pnl, 0)),
-        title={"text": "Total Loss", "font": {"color": "white"}},
-        number={"prefix": "$", "font": {"color": "white"}},
-        gauge={
-            "axis": {"range": [0, total_limit], "tickcolor": "white"},
-            "bar":  {"color": "#ff4b4b" if total_used > 70 else "#ffd700"},
-            "steps": [
-                {"range": [0, total_limit * 0.5],  "color": "#1e2130"},
-                {"range": [total_limit * 0.5, total_limit * 0.8], "color": "#2d3548"},
-                {"range": [total_limit * 0.8, total_limit],       "color": "#3d1e1e"},
-            ],
-        }
-    ))
-    fig_total.update_layout(
-        height=200, margin=dict(l=20, r=20, t=30, b=20),
-        paper_bgcolor="#0e1117", font_color="white"
-    )
-    st.plotly_chart(fig_total, use_container_width=True)
-
-with col_right:
-    st.subheader("📈 Equity Curve")
-
-    if closed_trades:
-        eq_data = []
-        running_eq = ACCOUNT_SIZE
-        for t in sorted(closed_trades, key=lambda x: x.get("exit_time", "")):
-            pnl = t.get("pnl", 0) or 0
-            running_eq += pnl
-            eq_data.append({
-                "time":   t.get("exit_time", "")[:16],
-                "equity": round(running_eq, 2),
-                "pnl":    pnl,
-                "trade":  t.get("name", ""),
-                "result": "TP" if t.get("exit_reason") == "tp" else "SL",
-            })
-
-        df_eq = pd.DataFrame(eq_data)
-
-        fig_eq = go.Figure()
-
-        # Equity line
-        fig_eq.add_trace(go.Scatter(
-            x=df_eq["time"], y=df_eq["equity"],
-            mode="lines+markers",
-            line=dict(color="#00d4aa", width=2),
-            marker=dict(
-                color=["#00d4aa" if r == "TP" else "#ff4b4b" for r in df_eq["result"]],
-                size=8
-            ),
-            name="Equity",
-            hovertemplate="<b>%{x}</b><br>Equity: $%{y:.2f}<br>%{text}",
-            text=[f"{r['trade']} {r['result']} ${r['pnl']:+.2f}" for _, r in df_eq.iterrows()]
-        ))
-
-        # Initial capital line
-        fig_eq.add_hline(y=ACCOUNT_SIZE, line_dash="dash",
-                         line_color="gray", annotation_text="Start $10,000")
-
-        fig_eq.update_layout(
-            height=420,
-            paper_bgcolor="#0e1117",
-            plot_bgcolor="#1e2130",
-            font_color="white",
-            xaxis=dict(gridcolor="#2d3548", title=""),
-            yaxis=dict(gridcolor="#2d3548", title="Equity ($)"),
-            showlegend=False,
-            margin=dict(l=20, r=20, t=20, b=20),
+    with col1:
+        status_class = "status-live" if not state.get("paused") else "status-paused"
+        status_text  = "● LIVE" if not state.get("paused") else "⏸ PAUSED"
+        st.markdown(
+            f"# MARKETPAL AOS "
+            f"<span class='{status_class}'>{status_text}</span>",
+            unsafe_allow_html=True
         )
-        st.plotly_chart(fig_eq, use_container_width=True)
-    else:
-        st.info("Zatím žádné uzavřené obchody. Equity curve se zobrazí po prvním trade.")
-
-st.divider()
-
-# ─── ROW 3: OTEVŘENÉ POZICE + POSLEDNÍCH 10 TRADES ────────────
-
-col_open, col_closed = st.columns(2)
-
-with col_open:
-    st.subheader(f"🔴 Otevřené pozice ({len(open_trades)})")
-    if open_trades:
-        df_open = pd.DataFrame([{
-            "Strategie":  t.get("name", ""),
-            "Ticker":     t.get("ticker", ""),
-            "Směr":       t.get("direction", "").upper(),
-            "Entry":      t.get("entry_price", 0),
-            "TP":         t.get("tp", 0),
-            "SL":         t.get("sl", 0),
-            "Čas":        t.get("entry_time", "")[:16],
-        } for t in open_trades])
-        st.dataframe(df_open, use_container_width=True, hide_index=True)
-    else:
-        st.info("Žádné otevřené pozice")
-
-with col_closed:
-    st.subheader("📋 Posledních 10 obchodů")
-    if closed_trades:
-        recent = sorted(closed_trades,
-                        key=lambda x: x.get("exit_time", ""),
-                        reverse=True)[:10]
-        df_closed = pd.DataFrame([{
-            "Strategie": t.get("name", "")[:20],
-            "Ticker":    t.get("ticker", ""),
-            "Výsledek":  "✅ TP" if t.get("exit_reason") == "tp" else "❌ SL",
-            "P&L":       f"${t.get('pnl', 0):+.2f}",
-            "Exit":      t.get("exit_time", "")[:16],
-        } for t in recent])
-        st.dataframe(df_closed, use_container_width=True, hide_index=True)
-    else:
-        st.info("Zatím žádné uzavřené obchody")
-
-st.divider()
-
-# ─── ROW 4: TOP SIGNÁLY ────────────────────────────────────────
-
-st.subheader("🎯 Top Signály (Triple Barrier)")
-
-df_tb = load_triple_barrier()
-if not df_tb.empty:
-    strong = df_tb[df_tb["rating"] == "STRONG"].head(15)
-    if not strong.empty:
-        fig_pf = px.bar(
-            strong.sort_values("profit_factor", ascending=True),
-            x="profit_factor", y=strong["signal"] + " " + strong["ticker"] + " " + strong["timeframe"],
-            orientation="h",
-            color="win_rate",
-            color_continuous_scale="RdYlGn",
-            labels={"profit_factor": "Profit Factor", "win_rate": "Win Rate %"},
-            title="Strong Signals — Profit Factor"
+        st.markdown(
+            f"<span style='font-family:JetBrains Mono;font-size:0.75rem;color:#475569'>"
+            f"Last update: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"
+            f"</span>",
+            unsafe_allow_html=True
         )
-        fig_pf.update_layout(
-            height=400,
-            paper_bgcolor="#0e1117",
-            plot_bgcolor="#1e2130",
-            font_color="white",
-            margin=dict(l=20, r=20, t=40, b=20),
-            yaxis_title="",
-        )
-        st.plotly_chart(fig_pf, use_container_width=True)
-else:
-    st.info("Spusť triple_barrier.py pro zobrazení signálů")
 
-st.divider()
+    with col3:
+        if st.button("↻ Refresh", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
 
-# ─── ROW 5: LIVE CHART ─────────────────────────────────────────
 
-st.subheader("📊 Live Chart")
+# ═══════════════════════════════════════════════════════════════
+# FTMO PROGRESS
+# ═══════════════════════════════════════════════════════════════
 
-chart_col1, chart_col2, chart_col3 = st.columns(3)
-with chart_col1:
-    ticker_sel = st.selectbox("Ticker", ["EURUSD", "GBPUSD", "USDJPY", "AMZN", "AAPL", "NVDA"])
-with chart_col2:
-    tf_sel = st.selectbox("Timeframe", ["M5", "M15", "H1"])
-with chart_col3:
-    category_sel = "forex" if ticker_sel in ["EURUSD", "GBPUSD", "USDJPY", "USDCHF"] else "stocks"
-    st.text_input("Category", value=category_sel, disabled=True)
+def render_ftmo(state: dict):
+    ACCOUNT  = 10_000
+    TARGET   = 1_000
+    MAX_DD   = 1_000
+    MAX_DAY  = 500
 
-df_chart = load_gold_data(ticker_sel, tf_sel, category_sel)
+    equity    = state.get("equity", ACCOUNT)
+    total_pnl = state.get("total_pnl", 0)
+    daily_pnl = state.get("daily_pnl", 0)
+    total_dd  = ACCOUNT - equity
 
-if df_chart is not None and len(df_chart) > 0:
-    df_plot = df_chart.tail(100).copy()
+    profit_pct  = max(0, total_pnl / TARGET * 100)
+    dd_pct      = total_dd / MAX_DD * 100
+    daily_pct   = abs(min(daily_pnl, 0)) / MAX_DAY * 100
 
-    # Timestamp sloupec
-    if "timestamp" in df_plot.columns:
-        x_axis = df_plot["timestamp"]
-    else:
-        x_axis = pd.RangeIndex(len(df_plot))
+    # Barvy
+    profit_color = "#4ade80" if profit_pct < 100 else "#fbbf24"
+    dd_color     = "#4ade80" if dd_pct < 50 else "#fbbf24" if dd_pct < 80 else "#f87171"
+    daily_color  = "#4ade80" if daily_pct < 50 else "#fbbf24" if daily_pct < 80 else "#f87171"
 
-    fig_chart = make_subplots(
+    st.markdown("<div class='section-title'>FTMO Challenge Progress</div>",
+                unsafe_allow_html=True)
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown(
+            f"<div class='progress-label'>🎯 Profit Target "
+            f"${total_pnl:+.0f} / ${TARGET}</div>", unsafe_allow_html=True)
+        st.progress(max(0.0, min(profit_pct / 100, 1.0)))
+        st.caption(f"{profit_pct:.1f}% splněno")
+
+    with c2:
+        st.markdown(
+            f"<div class='progress-label'>📉 Max Drawdown "
+            f"${max(0,total_dd):.0f} / ${MAX_DD}</div>", unsafe_allow_html=True)
+        st.progress(max(0.0, min(dd_pct / 100, 1.0)))
+        st.caption(f"{max(0,dd_pct):.1f}% využito")
+
+    with c3:
+        st.markdown(
+            f"<div class='progress-label'>📅 Daily Loss "
+            f"${abs(min(daily_pnl,0)):.0f} / ${MAX_DAY}</div>",
+            unsafe_allow_html=True)
+        st.progress(max(0.0, min(daily_pct / 100, 1.0)))
+        st.caption(f"{daily_pct:.1f}% využito")
+
+
+# ═══════════════════════════════════════════════════════════════
+# KEY METRICS
+# ═══════════════════════════════════════════════════════════════
+
+def render_metrics(state: dict):
+    equity    = state.get("equity", 10_000)
+    daily_pnl = state.get("daily_pnl", 0)
+    total_pnl = state.get("total_pnl", 0)
+    wins      = state.get("win_count", 0)
+    losses    = state.get("loss_count", 0)
+    n_trades  = wins + losses
+    wr        = wins / max(n_trades, 1) * 100
+    n_open    = len(state.get("open_trades", []))
+    dd        = 10_000 - equity
+
+    cols = st.columns(6)
+    metrics = [
+        ("Equity",      f"${equity:,.2f}",  f"${total_pnl:+.2f} total"),
+        ("Dnes P&L",    f"${daily_pnl:+.2f}", f"{state.get('daily_trade_count',0)} obchodů"),
+        ("Win Rate",    f"{wr:.0f}%",        f"{wins}W / {losses}L"),
+        ("Drawdown",    f"${dd:.0f}",        f"{dd/100:.1f}% účtu"),
+        ("Otevřeno",    f"{n_open}",          "pozic"),
+        ("Celkem",      f"{n_trades}",        "uzavřených"),
+    ]
+    for col, (label, value, delta) in zip(cols, metrics):
+        with col:
+            st.metric(label, value, delta)
+
+
+# ═══════════════════════════════════════════════════════════════
+# EQUITY CURVE
+# ═══════════════════════════════════════════════════════════════
+
+def render_equity_curve(trades: list):
+    if not trades:
+        st.info("Zatím žádné uzavřené obchody.")
+        return
+
+    closed = [t for t in trades if t.get("status") == "CLOSED"]
+    if not closed:
+        return
+
+    df = pd.DataFrame(closed)
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df = df.sort_values("timestamp")
+
+    # Equity curve
+    if "equity_after" not in df.columns:
+        df["equity_after"] = 10_000 + df["pnl"].cumsum()
+
+    equity   = df["equity_after"].values
+    peak     = np.maximum.accumulate(equity)
+    drawdown = (equity - peak) / peak * 100
+
+    fig = make_subplots(
         rows=2, cols=1,
+        row_heights=[0.7, 0.3],
         shared_xaxes=True,
-        vertical_spacing=0.03,
-        row_heights=[0.75, 0.25]
+        vertical_spacing=0.04,
     )
 
-    # Candlestick
-    fig_chart.add_trace(go.Candlestick(
-        x=x_axis,
-        open=df_plot["open"],
-        high=df_plot["high"],
-        low=df_plot["low"],
-        close=df_plot["close"],
-        name="Price",
-        increasing_line_color="#00d4aa",
-        decreasing_line_color="#ff4b4b",
+    # Equity line
+    fig.add_trace(go.Scatter(
+        x=df["timestamp"], y=equity,
+        mode="lines",
+        name="Equity",
+        line=dict(color="#60a5fa", width=2.5),
+        fill="tozeroy",
+        fillcolor="rgba(96,165,250,0.07)",
     ), row=1, col=1)
 
-    # Bollinger Bands
-    if "bb_upper" in df_plot.columns:
-        fig_chart.add_trace(go.Scatter(
-            x=x_axis, y=df_plot["bb_upper"],
-            line=dict(color="rgba(100,100,255,0.4)", width=1),
-            name="BB Upper"
-        ), row=1, col=1)
-        fig_chart.add_trace(go.Scatter(
-            x=x_axis, y=df_plot["bb_lower"],
-            line=dict(color="rgba(100,100,255,0.4)", width=1),
-            fill="tonexty", fillcolor="rgba(100,100,255,0.05)",
-            name="BB Lower"
-        ), row=1, col=1)
+    # Baseline
+    fig.add_hline(y=10_000, line_dash="dot",
+                  line_color="#475569", line_width=1, row=1, col=1)
 
-    # EMA
-    if "ema_20" in df_plot.columns:
-        fig_chart.add_trace(go.Scatter(
-            x=x_axis, y=df_plot["ema_20"],
-            line=dict(color="orange", width=1),
-            name="EMA 20"
-        ), row=1, col=1)
+    # Profit target
+    fig.add_hline(y=11_000, line_dash="dash",
+                  line_color="#4ade80", line_width=1,
+                  annotation_text="Target", row=1, col=1)
 
-    # Signály — červené trojúhelníky pro short, zelené pro long
-    signal_cols = [c for c in df_plot.columns if c.startswith("signal_")]
-    for sc in signal_cols[:3]:  # max 3 signály aby nebyl graf přeplněný
-        sig_rows = df_plot[df_plot[sc] == True]
-        if len(sig_rows) > 0:
-            direction = "short" if any(k in sc for k in ["bear", "down", "death", "overbought"]) else "long"
-            fig_chart.add_trace(go.Scatter(
-                x=sig_rows.index if not "timestamp" in sig_rows.columns else sig_rows["timestamp"],
-                y=sig_rows["high"] * 1.001 if direction == "short" else sig_rows["low"] * 0.999,
-                mode="markers",
-                marker=dict(
-                    symbol="triangle-down" if direction == "short" else "triangle-up",
-                    size=10,
-                    color="#ff4b4b" if direction == "short" else "#00d4aa",
-                ),
-                name=sc.replace("signal_", ""),
-            ), row=1, col=1)
+    # Drawdown
+    fig.add_trace(go.Scatter(
+        x=df["timestamp"], y=drawdown,
+        mode="lines",
+        name="Drawdown",
+        line=dict(color="#f87171", width=1.5),
+        fill="tozeroy",
+        fillcolor="rgba(248,113,113,0.15)",
+    ), row=2, col=1)
 
-    # Volume
-    if "volume" in df_plot.columns:
-        colors = ["#00d4aa" if c >= o else "#ff4b4b"
-                  for c, o in zip(df_plot["close"], df_plot["open"])]
-        fig_chart.add_trace(go.Bar(
-            x=x_axis, y=df_plot["volume"],
-            marker_color=colors,
-            name="Volume",
-            opacity=0.7,
-        ), row=2, col=1)
+    fig.add_hline(y=-10, line_dash="dash",
+                  line_color="#f87171", line_width=1,
+                  annotation_text="Max DD", row=2, col=1)
 
-    fig_chart.update_layout(
-        height=500,
-        paper_bgcolor="#0e1117",
-        plot_bgcolor="#1e2130",
-        font_color="white",
-        xaxis_rangeslider_visible=False,
-        showlegend=True,
-        legend=dict(bgcolor="#1e2130", font=dict(size=10)),
-        margin=dict(l=20, r=20, t=20, b=20),
-        xaxis2=dict(gridcolor="#2d3548"),
-        yaxis=dict(gridcolor="#2d3548"),
-        yaxis2=dict(gridcolor="#2d3548"),
+    fig.update_layout(
+        height=420,
+        paper_bgcolor="#0a0e1a",
+        plot_bgcolor="#0d1220",
+        font=dict(family="JetBrains Mono", color="#94a3b8", size=11),
+        showlegend=False,
+        margin=dict(l=0, r=0, t=10, b=0),
+        xaxis2=dict(gridcolor="#1e293b"),
+        yaxis=dict(gridcolor="#1e293b",
+                   tickformat="$,.0f"),
+        yaxis2=dict(gridcolor="#1e293b",
+                    tickformat=".1f",
+                    ticksuffix="%"),
     )
-    st.plotly_chart(fig_chart, use_container_width=True)
-else:
-    st.warning(f"Data pro {ticker_sel} {tf_sel} nenalezena. Spusť scheduler.py --now")
 
-st.divider()
+    st.plotly_chart(fig, use_container_width=True)
 
-# ─── ROW 6: PIPELINE LOG ───────────────────────────────────────
 
-st.subheader("🔄 Pipeline History")
+# ═══════════════════════════════════════════════════════════════
+# P&L PER STRATEGIE
+# ═══════════════════════════════════════════════════════════════
 
-if sched_log:
-    df_log = pd.DataFrame([{
-        "Datum":  e["timestamp"][:16].replace("T", " "),
-        "Status": "✅ OK" if e["success"] else "❌ CHYBA",
-        "Čas":    f"{e['total_duration_s']:.0f}s",
-    } for e in reversed(sched_log[-10:])])
-    st.dataframe(df_log, use_container_width=True, hide_index=True)
-else:
-    st.info("Zatím žádný log. Spusť scheduler.py --now")
+def render_strategy_stats(trades: list):
+    closed = [t for t in trades if t.get("status") == "CLOSED"]
+    if not closed:
+        return
 
-# ─── FOOTER ────────────────────────────────────────────────────
+    df   = pd.DataFrame(closed)
+    col  = "signal_name" if "signal_name" in df.columns else "ticker"
+    rows = []
 
-st.markdown("---")
-st.caption(
-    f"MarketPal v2 | Phase 3 | "
-    f"Trades: {len(trades)} | "
-    f"Equity: ${equity:,.2f} | "
-    f"Poslední update: {datetime.now().strftime('%H:%M:%S')}"
-)
+    for name, grp in df.groupby(col):
+        wins  = (grp["pnl"] > 0).sum()
+        total = len(grp)
+        rows.append({
+            "Strategie":  name,
+            "Obchodů":    total,
+            "Win Rate":   f"{wins/total*100:.0f}%",
+            "Total P&L":  f"${grp['pnl'].sum():+.2f}",
+            "Avg P&L":    f"${grp['pnl'].mean():+.2f}",
+            "Best":       f"${grp['pnl'].max():+.2f}",
+            "Worst":      f"${grp['pnl'].min():+.2f}",
+        })
+
+    st.dataframe(
+        pd.DataFrame(rows),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════
+# P&L HISTOGRAM
+# ═══════════════════════════════════════════════════════════════
+
+def render_pnl_distribution(trades: list):
+    closed = [t for t in trades if t.get("status") == "CLOSED"]
+    if len(closed) < 5:
+        return
+
+    pnls = [t["pnl"] for t in closed]
+    colors = ["#4ade80" if p > 0 else "#f87171" for p in pnls]
+
+    fig = go.Figure(go.Histogram(
+        x=pnls,
+        nbinsx=20,
+        marker_color=colors,
+        marker_line_width=0,
+    ))
+    fig.add_vline(x=0, line_color="#475569", line_width=1)
+    fig.add_vline(x=np.mean(pnls), line_dash="dash",
+                  line_color="#60a5fa", line_width=1.5,
+                  annotation_text=f"Avg ${np.mean(pnls):+.0f}")
+
+    fig.update_layout(
+        height=220,
+        paper_bgcolor="#0a0e1a",
+        plot_bgcolor="#0d1220",
+        font=dict(family="JetBrains Mono", color="#94a3b8", size=10),
+        margin=dict(l=0, r=0, t=10, b=0),
+        bargap=0.1,
+        xaxis=dict(gridcolor="#1e293b", tickprefix="$"),
+        yaxis=dict(gridcolor="#1e293b"),
+        showlegend=False,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+# ═══════════════════════════════════════════════════════════════
+# OTEVŘENÉ POZICE
+# ═══════════════════════════════════════════════════════════════
+
+def render_open_positions(state: dict):
+    positions = state.get("open_trades", [])
+
+    if not positions:
+        st.markdown(
+            "<div style='color:#475569;font-family:JetBrains Mono;"
+            "font-size:0.8rem;padding:16px'>Žádné otevřené pozice</div>",
+            unsafe_allow_html=True
+        )
+        return
+
+    for pos in positions:
+        ticker    = pos.get("ticker", "?")
+        direction = pos.get("direction", "?").upper()
+        entry     = pos.get("entry", 0)
+        sl        = pos.get("sl", 0)
+        tp        = pos.get("tp", 0)
+        color     = "#4ade80" if direction == "LONG" else "#f87171"
+        arrow     = "▲" if direction == "LONG" else "▼"
+
+        st.markdown(f"""
+        <div style='background:#111827;border:1px solid #1e3a5f;border-radius:8px;
+                    padding:12px 16px;margin:6px 0;font-family:JetBrains Mono;'>
+            <span style='color:{color};font-weight:700;font-size:0.95rem'>
+                {arrow} {ticker} {direction}
+            </span>
+            <span style='color:#475569;font-size:0.75rem;margin-left:12px'>
+                Entry: <span style='color:#e2e8f0'>{entry:.5f}</span>
+                &nbsp;SL: <span style='color:#f87171'>{sl:.5f}</span>
+                &nbsp;TP: <span style='color:#4ade80'>{tp:.5f}</span>
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
+
+
+# ═══════════════════════════════════════════════════════════════
+# SYSTEM BUS EVENTS
+# ═══════════════════════════════════════════════════════════════
+
+def render_events(events: list):
+    if not events:
+        st.markdown(
+            "<div style='color:#475569;font-family:JetBrains Mono;"
+            "font-size:0.8rem;padding:8px'>Čekám na eventy...</div>",
+            unsafe_allow_html=True
+        )
+        return
+
+    EVENT_ICONS = {
+        "signal":   ("🟢", "event-signal"),
+        "order":    ("🔵", "event-order"),
+        "position": ("🔵", "event-order"),
+        "risk":     ("🟡", "event-risk"),
+        "system":   ("⚪", "event-item"),
+        "error":    ("🔴", "event-error"),
+    }
+
+    for ev in reversed(events[-12:]):
+        etype  = ev.get("type", "")
+        source = ev.get("source", "?")
+        ts     = ev.get("timestamp", "")[:16].replace("T", " ")
+        prefix = etype.split(".")[0]
+        icon, css = EVENT_ICONS.get(prefix, ("⚪", "event-item"))
+
+        payload = ev.get("payload", {})
+        detail  = ""
+        if "ticker" in payload:
+            detail = f"· {payload['ticker']} {payload.get('direction','')}"
+        elif "pnl" in payload:
+            detail = f"· P&L: ${payload['pnl']:+.2f}"
+        elif "error" in payload:
+            detail = f"· {str(payload['error'])[:40]}"
+
+        st.markdown(
+            f"<div class='{css}'>"
+            f"{icon} <b>{etype}</b> "
+            f"<span style='color:#475569'>← {source}</span> "
+            f"<span style='color:#64748b'>{detail}</span> "
+            f"<span style='float:right;color:#334155'>{ts}</span>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+
+
+# ═══════════════════════════════════════════════════════════════
+# MAIN LAYOUT
+# ═══════════════════════════════════════════════════════════════
+
+def main():
+    state  = load_state()
+    trades = load_trades()
+    events = load_bus_events()
+
+    render_header(state)
+    st.divider()
+
+    # FTMO progress
+    render_ftmo(state)
+    st.divider()
+
+    # Klíčové metriky
+    render_metrics(state)
+    st.divider()
+
+    # Hlavní obsah — 2 sloupce
+    left, right = st.columns([2, 1])
+
+    with left:
+        st.markdown("<div class='section-title'>Equity Curve & Drawdown</div>",
+                    unsafe_allow_html=True)
+        render_equity_curve(trades)
+
+        st.markdown("<div class='section-title'>P&L Distribuce</div>",
+                    unsafe_allow_html=True)
+        render_pnl_distribution(trades)
+
+        st.markdown("<div class='section-title'>Statistiky per strategie</div>",
+                    unsafe_allow_html=True)
+        render_strategy_stats(trades)
+
+    with right:
+        st.markdown("<div class='section-title'>Otevřené pozice</div>",
+                    unsafe_allow_html=True)
+        render_open_positions(state)
+
+        st.markdown("<div class='section-title'>System Bus — posledních 12 eventů</div>",
+                    unsafe_allow_html=True)
+        render_events(events)
+
+    # Auto-refresh
+    st.divider()
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.caption(
+            "Dashboard se automaticky refreshuje každých 15s. "
+            "Data čte z: data/bot_state.json, trade_log.json, system_bus.json"
+        )
+    with col2:
+        auto = st.toggle("Auto-refresh 15s", value=False)
+    if auto:
+        time.sleep(15)
+        st.rerun()
+
+
+if __name__ == "__main__" or True:
+    main()
+    

@@ -52,6 +52,25 @@ def install_dev_deps():
     run(f"pip install {' '.join(packages)} --break-system-packages -q")
     print("  ✅ Dev závislosti nainstalovány")
 
+    # Windows: skriptů se nainstalují do složky která není v PATH
+    # Opravíme PATH pro aktuální session automaticky
+    if sys.platform == "win32":
+        import site, subprocess as sp
+        # Zjisti kde jsou Scripts
+        result = sp.run(
+            ["python", "-c", "import site; print(site.getusersitepackages())"],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            site_pkg = result.stdout.strip()
+            scripts  = site_pkg.replace("site-packages", "Scripts")
+            current  = os.environ.get("PATH", "")
+            if scripts not in current:
+                os.environ["PATH"] = scripts + os.pathsep + current
+            print(f"  💡 PATH tip: přidej trvale do systému:")
+            print(f"     {scripts}")
+            print(f"     (Win+R → sysdm.cpl → Upřesnit → Proměnné prostředí)")
+
 
 # ═══════════════════════════════════════════════════════════════
 # 2. .env.example
@@ -87,7 +106,7 @@ def create_env_example():
     print("\n📄 Vytvářím .env.example...")
     path = ROOT / ".env.example"
     if not path.exists():
-        path.write_text(ENV_EXAMPLE)
+        path.write_text(ENV_EXAMPLE, encoding="utf-8")
         print("  ✅ .env.example vytvořen")
     else:
         print("  ✓  .env.example již existuje")
@@ -95,7 +114,7 @@ def create_env_example():
     # Vytvoř .env pokud neexistuje
     env_path = ROOT / ".env"
     if not env_path.exists():
-        env_path.write_text(ENV_EXAMPLE.replace("your_", "FILL_IN_"))
+        env_path.write_text(ENV_EXAMPLE.replace("your_", "FILL_IN_"), encoding="utf-8")
         print("  ✅ .env vytvořen — vyplň hodnoty!")
 
 
@@ -138,7 +157,7 @@ def setup_pre_commit():
     print("\n🔧 Nastavuji pre-commit hooks...")
     config_path = ROOT / ".pre-commit-config.yaml"
     if not config_path.exists():
-        config_path.write_text(PRE_COMMIT_CONFIG)
+        config_path.write_text(PRE_COMMIT_CONFIG, encoding="utf-8")
         print("  ✅ .pre-commit-config.yaml vytvořen")
 
     # Nainstaluj hooks do .git
@@ -261,7 +280,7 @@ def create_makefile():
     print("\n⚙️  Vytvářím Makefile...")
     path = ROOT / "Makefile"
     if not path.exists():
-        path.write_text(MAKEFILE)
+        path.write_text(MAKEFILE, encoding="utf-8")
         print("  ✅ Makefile vytvořen")
         print("  💡 Teď: make pipeline / make signals / make commit")
     else:
@@ -331,7 +350,7 @@ def create_gitignore():
     print("\n🔒 Vytvářím .gitignore...")
     path = ROOT / ".gitignore"
     if not path.exists():
-        path.write_text(GITIGNORE)
+        path.write_text(GITIGNORE, encoding="utf-8")
         print("  ✅ .gitignore vytvořen")
     else:
         print("  ✓  .gitignore již existuje")
@@ -397,7 +416,7 @@ def create_changelog():
     print("\n📋 Vytvářím CHANGELOG.md...")
     path = ROOT / "CHANGELOG.md"
     if not path.exists():
-        path.write_text(CHANGELOG)
+        path.write_text(CHANGELOG, encoding="utf-8")
         print("  ✅ CHANGELOG.md vytvořen")
     else:
         print("  ✓  CHANGELOG.md již existuje")
@@ -461,7 +480,7 @@ def create_github_actions():
     ci_path = ci_dir / "ci.yml"
 
     if not ci_path.exists():
-        ci_path.write_text(GITHUB_CI)
+        ci_path.write_text(GITHUB_CI, encoding="utf-8")
         print("  ✅ .github/workflows/ci.yml vytvořen")
         print("  💡 Po každém 'git push' GitHub automaticky spustí lint + testy")
     else:
@@ -514,7 +533,7 @@ def create_requirements():
     print("\n📦 Vytvářím requirements.txt...")
     path = ROOT / "requirements.txt"
     if not path.exists():
-        path.write_text(REQUIREMENTS)
+        path.write_text(REQUIREMENTS, encoding="utf-8")
         print("  ✅ requirements.txt vytvořen")
     else:
         print("  ✓  requirements.txt již existuje")

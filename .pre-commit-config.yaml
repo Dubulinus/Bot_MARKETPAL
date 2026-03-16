@@ -1,0 +1,28 @@
+# .pre-commit-config.yaml
+# Automaticky spustí Black + Ruff před každým git commitem
+# Instalace: pre-commit install
+
+repos:
+  - repo: https://github.com/psf/black
+    rev: 24.3.0
+    hooks:
+      - id: black
+        language_version: python3
+        args: ["--line-length=100"]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.1
+    hooks:
+      - id: ruff
+        args: ["--fix", "--ignore=E501,F401"]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=5000"]   # blokuj soubory > 5 MB (parquet!)
+      - id: check-json
+      - id: debug-statements      # blokuj breakpoint() v kódu

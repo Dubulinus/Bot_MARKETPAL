@@ -1,0 +1,197 @@
+"""
+╔══════════════════════════════════════════════════════════════╗
+║     MARKETPAL - JAK PROPOJIT SAFEGUARDS                    ║
+║     Copy-paste šablona pro každý live skript               ║
+╚══════════════════════════════════════════════════════════════╝
+
+TOTO NENÍ SPUSTITELNÝ SKRIPT — je to návod.
+Ukazuje přesně jak přidat pojistky do live_signal_generator.py
+a mt5_executor_v2.py.
+"""
+
+# ═══════════════════════════════════════════════════════════════
+# ŠABLONA — zkopíruj začátek do každého live skriptu
+# ═══════════════════════════════════════════════════════════════
+
+"""
+PŘIDEJ TOTO NA ZAČÁTEK KAŽDÉHO LIVE SKRIPTU:
+─────────────────────────────────────────────
+"""
+
+# Import blok (přidej k existujícím importům):
+from logger     import get_logger, Timer, PipelineAudit, setup_global_exception_handler
+from safeguards import (
+    CircuitBreaker, PreFlightChecks, run_pre_flight,
+    PipelineValidator, Reconciler, Watchdog,
+    EmergencyStop
+)
+
+# ─── live_signal_generator.py — main() začátek ───────────────
+
+def main_live_signal_generator():
+    """Jak upravit main() v live_signal_generator.py"""
+
+    log = get_logger("live_signal_generator")
+    setup_global_exception_handler("live_signal_generator")
+
+    # 1. Pre-flight — zastav pokud chybí .env nebo gold data
+    run_pre_flight(
+        pairs      = ["EURUSD", "GBPUSD", "USDCHF"],
+        timeframes = ["M15", "H1"],
+    )
+
+    # 2. Emergency stop handler — Ctrl+C = čisté zastavení
+    from mt5_executor import close_all_positions, MT5Connection
+    EmergencyStop.setup(on_stop=lambda: close_all_positions("emergency_stop"))
+
+    # 3. Watchdog — spusť v background
+    Watchdog(timeout_min=35).start()
+
+    # 4. Circuit breaker pro API volání
+    cb_signals = CircuitBreaker("signal_generation", max_failures=5)
+    cb_mt5     = CircuitBreaker("mt5_execution",     max_failures=3,
+                                reset_timeout=120)
+
+    # 5. Audit log pro celou session
+    audit = PipelineAudit("live_signal_generator")
+    audit.start()
+
+    signals_sent = 0
+    errors       = 0
+
+    while not EmergencyStop.should_stop():
+
+        # Heartbeat
+        Watchdog.ping(status="RUNNING", extra={
+            "signals_sent": signals_sent,
+            "errors": errors,
+        })
+
+        # Signal generation s circuit breakerem
+        try:
+            with cb_signals:
+                with Timer(log, "Signal check"):
+                    signals = check_signals(verbose=True)
+
+        except CircuitBreaker.__class__ as e:
+            log.error(f"Signal CB OPEN: {e}")
+            import time; time.sleep(60)
+            continue
+
+        # MT5 execution s circuit breakerem
+        for sig in signals:
+            try:
+                with cb_mt5:
+                    result = place_order(sig)  # z mt5_executor_v2
+                    if result.get("success"):
+                        signals_sent += 1
+
+            except Exception as e:
+                errors += 1
+                log.error(f"Execution chyba: {e}")
+
+        import time; time.sleep(15 * 60)
+
+    audit.finish(files_ok=signals_sent, notes=f"{errors} chyb")
+
+
+# ─── mt5_executor_v2.py — jak přidat do place_order() ────────
+
+def example_place_order_with_safeguards(signal: dict) -> dict:
+    """
+    Ukázka jak vypadá place_order() s pojistkami.
+    Přidej do mt5_executor_v2.py.
+    """
+    log = get_logger("mt5_executor")
+    cb  = CircuitBreaker("mt5_orders", max_failures=3, reset_timeout=120)
+
+    # Pre-trade checks (existuje v mt5_executor)
+    passed, reason = pre_trade_checks(signal)
+    if not passed:
+        log.warning(f"Pre-trade check selhal: {reason}")
+        return {"success": False, "reason": reason}
+
+    # Circuit breaker okolo skutečného MT5 volání
+    try:
+        with cb:
+            result = _send_mt5_order(signal)  # vnitřní funkce
+
+    except CircuitBreakerError as e:
+        log.error(f"MT5 CB OPEN: {e}")
+        return {"success": False, "reason": "circuit_breaker_open"}
+
+    except Exception as e:
+        # CB zaznamenal selhání automaticky (__exit__)
+        log.error(f"MT5 order selhal: {e}")
+        return {"success": False, "reason": str(e)}
+
+    # Post-trade reconciliation (po každém 5. obchodu)
+    if result.get("success"):
+        from mt5_executor import get_open_positions
+        positions = get_open_positions()
+        r = Reconciler()
+        r.reconcile(broker_positions=positions)
+
+    return result
+
+
+# ─── Pipeline skripty — přidej validaci ──────────────────────
+
+def example_feature_engineering_with_validation():
+    """
+    Jak přidat validaci do feature_engineering.py
+    """
+    log   = get_logger("feature_engineering")
+    audit = PipelineAudit("feature_engineering_v2")
+    audit.start()
+
+    ok = 0
+    fail = 0
+
+    for ticker in ["EURUSD", "GBPUSD"]:
+        import pandas as pd
+        df = pd.read_parquet(f"data/04_GOLD_FEATURES/M15/forex/{ticker}.parquet")
+
+        with Timer(log, f"Features {ticker}"):
+            df = add_all_new_features(df)
+
+        # Validace výstupu před uložením
+        valid = PipelineValidator.validate_signals(
+            df, f"{ticker} M15", min_signal_count=20
+        )
+
+        if valid:
+            df.to_parquet(f"data/04_GOLD_FEATURES/M15/forex/{ticker}.parquet")
+            ok += 1
+        else:
+            log.error(f"{ticker}: validace selhala, soubor NEpřepsán")
+            fail += 1
+
+    audit.finish(files_ok=ok, files_failed=fail)
+
+
+# ═══════════════════════════════════════════════════════════════
+# CHECKLIST — co přidat do každého skriptu
+# ═══════════════════════════════════════════════════════════════
+
+CHECKLIST = """
+KAŽDÝ PIPELINE SKRIPT (feature_eng, triple_barrier, meta_labeling):
+  ✅ from logger import get_logger, Timer, PipelineAudit
+  ✅ log = get_logger("nazev_skriptu")
+  ✅ setup_global_exception_handler("nazev_skriptu")
+  ✅ audit = PipelineAudit("nazev"); audit.start()
+  ✅ with Timer(log, "popis operace"): ... 
+  ✅ PipelineValidator.validate_parquet(...) po uložení
+  ✅ audit.finish(files_ok=N)
+
+KAŽDÝ LIVE SKRIPT (signal_generator, mt5_executor):
+  ✅ run_pre_flight() jako první věc v main()
+  ✅ EmergencyStop.setup(on_stop=close_all_positions)
+  ✅ Watchdog(timeout_min=35).start()
+  ✅ CircuitBreaker pro každé síťové/API volání
+  ✅ Watchdog.ping() v každé iteraci hlavní smyčky
+  ✅ if EmergencyStop.should_stop(): break
+  ✅ Reconciler().reconcile() po restartu
+"""
+
+print(CHECKLIST)
